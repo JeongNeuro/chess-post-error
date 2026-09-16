@@ -1,86 +1,88 @@
-원고 v17 — 절별 수치 (paper_check 전사용)
+Manuscript v17 - every number, grouped by the section it appears in.
+Extracted mechanically from the LaTeX source; the transcription in
+src/paper_check.py is checked against this file by tests/test_transcription.py.
 ==================================================================
 
-[Abstract]  12개
+[Abstract]  12 values
     543,987     88,548      2,014     +0.209      0.017     -0.407     -0.537      0.015
        .685       .103       .739       .032
 
-[The Present Study]  3개
+[The Present Study]  3 values
       2,014    543,987     88,548
 
-[Sampling]  4개
+[Sampling]  4 values
      19.1\%     27.9\%      2,136      2,014
 
-[Event A: Blunder]  2개
+[Event A: Blunder]  2 values
      -0.003     92.5\%
 
-[Revision to the definition of Event B]  5개
+[Revision to the definition of Event B]  5 values
     975,871     54.1\%     12.3\%         44    543,987
 
-[Matched Control Windows]  1개
+[Matched Control Windows]  1 values
      +0.021
 
-[Mixed-effects models]  1개
+[Mixed-effects models]  1 values
      82.6\%
 
-[Robustness]  20개
+[Robustness]  20 values
      -0.513     -0.537     -0.560     -0.534         12     -0.515     -0.452     +0.066
      +0.063     +0.078     -0.493     -0.525     -0.587      0.008      1,724      0.015
      -0.596      0.014     -0.593      0.021
 
-[Sample and Event Counts]  6개
+[Sample and Event Counts]  6 values
       2,014    543,987       4.19     88,548    550,000     85,000
 
-[When the Effect Occurs]  15개
+[When the Effect Occurs]  15 values
      -0.490     -0.563         32     -0.030     +0.008     -0.038     -0.013     -0.019
      +0.037     +0.279     +0.372     +0.059     +0.078      0.073      0.019
 
-[Effects by Co-occurrence of Material Loss]  26개
+[Effects by Co-occurrence of Material Loss]  26 values
      +0.209      0.017       12.3      1,629     -0.407      -23.4      1,642     -0.537
       0.015      -35.3      1,781       .001     -0.001     +0.010     -0.018     +0.616
       0.024       25.3     +0.018     +0.048     +0.486     -0.213     -0.233      0.020
       3.7\%      4.0\%
 
-[Magnitude of Material Lost]  7개
+[Magnitude of Material Lost]  7 values
      -0.301      0.015     -0.979      0.016       .001     -0.081     -0.464
 
-[Direction of loss]  13개
+[Direction of loss]  13 values
      -0.301      0.015     -0.979      0.016       .001     +0.219      0.014     +0.027
      -0.520     -1.006         25     +0.307     -0.455
 
-[Number of available options]  5개
+[Number of available options]  5 values
        8.50     -0.382     -0.693     -0.689     -0.990
 
-[Individual-Level Reliability]  20개
+[Individual-Level Reliability]  20 values
        .685       .103      0.103      0.048     -0.032      0.051      0.685      0.115
       0.739      0.122       .352       .366       .441       .546       .631       .738
        .828       .039       .036       .051
 
-[Comparison With a Laboratory Task]  23개
+[Comparison With a Laboratory Task]  23 values
      91,741     11.4\%     91,569     +0.112     -0.019     +0.131     +0.190      0.267
      +0.209      0.017     -0.407     -0.537     21.4\%     10.2\%       .001      3.8\%
       9.5\%     16.6\%     33.5\%       .233       .358       .544       .676
 
-[Blunders Without Material Loss: The Laboratory Case]  6개
+[Blunders Without Material Loss: The Laboratory Case]  6 values
      +0.066     +0.063     +0.078     +0.209     -0.407     +0.055
 
-[Events Involving Material Loss]  2개
+[Events Involving Material Loss]  2 values
        .685       .739
 
-[Individual Differences]  4개
+[Individual Differences]  4 values
        .685       .739       .103       .032
 
-[Limitations]  1개
+[Limitations]  1 values
      92.5\%
 
-[Data and code availability]  1개
+[Data and code availability]  1 values
      10.176
 
-[Preregistration]  1개
+[Preregistration]  1 values
      10.176
 
-[Open Practices Statement]  1개
+[Open Practices Statement]  1 values
      10.176
 
 ==================================================================
-합계 179개 · 23개 절
+179 values across 23 sections

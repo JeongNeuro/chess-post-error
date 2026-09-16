@@ -52,29 +52,31 @@ KEY = ["game_id", "player", "ply"]
 
 
 # ════════════════════════════════════════════════════════════════════
-# 파생 변수 — net_mat / z_pre3
-# 사전 추세 검정에서 사건 에폭이 사건 직전부터 이미 느렸음이 확인되었다
-# (하위 4개 층 +0.021, FM+ +0.038). 승률·시간·복잡도·플라이를 맞춰도
-# "그 사람이 직전에 얼마나 빨리 두고 있었는가"가 통제되지 않았기 때문이다.
+# Derived variables - net_mat and z_pre3
+# The pre-trend test showed that event epochs were already slower than their
+# controls just before the event (+0.021 in the lower four tiers, +0.038 in
+# FM+). Matching on win probability, time, complexity and ply does not
+# control for how fast the player happened to be moving just beforehand.
 # 
-#   z_pre3(t) = mean( z(t−2), z(t−4), z(t−6) )     ← 플라이 인덱스 기준
+#   z_pre3(t) = mean( z(t-2), z(t-4), z(t-6) )     <- by ply index
 # 
-# 사전등록에 없던 변수이므로 강건성 검증으로 보고한다.
+# It was not preregistered, so it is reported as a robustness check.
 # ════════════════════════════════════════════════════════════════════
 
 def add_pre_speed(d, k=3, col="z_pre3"):
     """
-    각 플라이에 직전 k개 자기 수의 z 평균을 붙인다 (플라이 인덱스 기준).
+    Attach to each ply the mean z of the player's preceding k moves, found
+    by ply index.
 
-    같은 플레이어의 연속한 수는 플라이가 2씩 차이나므로
-    ply−2, ply−4, …, ply−2k 를 찾는다. 하나라도 없으면 NaN.
+    Consecutive moves by the same player are two plies apart, so this looks
+    up ply-2, ply-4, ..., ply-2k. If any one is absent the result is NaN.
     """
     d = d.copy()
     dup = d.duplicated(subset=KEY).sum()
     if dup:
         raise ValueError(
-            f"(game_id, player, ply) 가 중복이다 ({dup}행). "
-            "z_pre3 를 플라이 기준으로 찾으려면 유일해야 한다.")
+            f"(game_id, player, ply) is not unique ({dup} rows). "
+            "Looking z_pre3 up by ply requires uniqueness.")
 
     s = d.set_index(KEY)["z"]
     acc = np.zeros(len(d), dtype=float)
@@ -82,16 +84,16 @@ def add_pre_speed(d, k=3, col="z_pre3"):
         key = pd.MultiIndex.from_arrays(
             [d["game_id"].values, d["player"].values, d["ply"].values - 2 * i],
             names=KEY)
-        acc += s.reindex(key).to_numpy(dtype=float)   # 없으면 NaN → 전파
+        acc += s.reindex(key).to_numpy(dtype=float)   # absent -> NaN, propagates
     d[col] = acc / k
     return d
 
 
 def _next_own(d, col):
-    """같은 플레이어의 다음 수(ply+2)에서의 col 값. 없으면 NaN."""
+    """Value of `col` at the player's next move (ply+2), NaN if absent."""
     dup = d.duplicated(subset=KEY).sum()
     if dup:
-        raise ValueError(f"(game_id, player, ply) 가 중복이다 ({dup}행).")
+        raise ValueError(f"(game_id, player, ply) is not unique ({dup} rows).")
     s = d.set_index(KEY)[col]
     key = pd.MultiIndex.from_arrays(
         [d["game_id"].values, d["player"].values, d["ply"].values + 2],
@@ -101,14 +103,16 @@ def _next_own(d, col):
 
 def net_legal_change(d, col="net_legal"):
     """
-    같은 플레이어의 연속한 두 수 사이 합법수 변화.
+    Change in legal move count between two consecutive moves by the same
+    player.
 
         net_legal(t) = n_legal(t+2) − n_legal(t)
 
-    논문 "Number of available options" 절이 쓰는 양이다. 재료를 잃은 쪽과
-    상대가 잃은 쪽에서 이 값이 반대 방향으로 움직이므로(자기 9점 손실은
-    평균 −8.52, 상대 9점 손실은 +6.86), 이 값을 고정한 채 효과를 비교하면
-    "국면이 단순해져서"라는 설명을 배제할 수 있다.
+    This is the quantity used in the manuscript's "Number of available
+    options" section. It moves in opposite directions when the player loses
+    material and when the opponent does (-8.52 on average for a nine-point
+    own loss, +6.86 for a nine-point opponent loss), so holding it fixed and
+    comparing the effect rules out "the position simply became simpler".
     """
     d = d.copy()
     d[col] = _next_own(d, "n_legal") - d["n_legal"].to_numpy(dtype=float)
@@ -117,30 +121,35 @@ def net_legal_change(d, col="net_legal"):
 
 def net_material_change(d, col="net_mat"):
     """
-    같은 플레이어의 연속한 두 수 사이 재료 차이 변화.
+    Change in the material differential between two consecutive moves by the
+    same player.
 
         net_mat(t) = mat_diff(t+2) − mat_diff(t)
 
-    mat_diff 는 stage2v2 가 **수를 두기 직전**, **수를 두는 쪽 관점**으로
-    기록한 재료 차이다. 따라서 net_mat < 0 이면 그 수 이후 다음 자기 차례가
-    올 때까지 재료를 순손실한 것이다. 등가 교환은 0이 되어 사건이 아니다.
+    mat_diff is recorded **immediately before the move** and **from the
+    mover's point of view**. So net_mat < 0 means the player lost material on
+    net between that move and their next turn. An even trade gives 0 and is
+    therefore not an event.
 
-    docs/definitions.md 의 "Event B — Material net loss" 구현이다.
+    This implements "Event B - Material net loss" in docs/definitions.md.
     """
     d = d.copy()
     d[col] = _next_own(d, "mat_diff") - d["mat_diff"].to_numpy(dtype=float)
     return d
 
 # ════════════════════════════════════════════════════════════════════
-# 사건 정의와 매칭
-# 사건 A    승률 10%p 하락, 국면 10~90% (민감도 20/30%p)
-#   사건 B    재료 순손실 (net_mat < 0). 등가 교환은 사건이 아니다
-#   매칭      동일 플레이어 + 각 변수 0.2 SD 캘리퍼 (Austin 2011), 1:N 평균
-#   종속변수  z = (ln(move_time+1) − μ_p)/σ_p, 효과 = z(사건) − z(대조)
+# Event definitions and matching
+#   Event A    win probability drops 10pp, position between 10% and 90%
+#              (sensitivity checks at 20 and 30pp)
+#   Event B    material net loss (net_mat < 0); an even trade is not an event
+#   Matching   same player, plus a 0.2 SD caliper on each variable
+#              (Austin 2011); 1:N, averaged
+#   Outcome    z = (ln(move_time+1) - mu_p)/sigma_p
+#              effect = z(event) - z(control)
 # ════════════════════════════════════════════════════════════════════
 
 def prepare(df):
-    """측정 하한 적용 + 플레이어 내 z 표준화"""
+    """Apply the measurement floor and standardise z within player."""
     d = df[df.move_time >= TAU].copy()
     d["y"] = np.log(d.move_time + LOG_OFFSET)
     g = d.groupby("player")["y"]
@@ -149,29 +158,31 @@ def prepare(df):
 
 
 def calipers(d, sd_mult=CALIPER_SD, vars_=MATCH_VARS):
-    """Austin(2011): 각 변수 SD의 0.2배"""
+    """Austin (2011): 0.2 times each variable's SD."""
     return {v: sd_mult * d[v].std() for v in vars_ if v in d.columns}
 
 
 def events_A(d, thresh=BLUNDER_THRESH, wp_lo=WP_LO, wp_hi=WP_HI):
-    """블런더. 진 쪽은 정의상 자동 배제(실측 0건), 상한을 대칭 적용"""
+    """Blunders. A lost position is excluded by the definition itself (0
+    observed); the bound is applied symmetrically."""
     m = d.wp_delta.notna() & (d.wp_delta <= -thresh)
     m &= d.wp_before.between(wp_lo, wp_hi)
     return d[m]
 
 
 def mask_A(d, thresh=BLUNDER_THRESH, wp_lo=WP_LO, wp_hi=WP_HI):
-    """events_A 와 같은 조건의 불리언 마스크 (집단 분할용)"""
+    """The same condition as events_A, as a boolean mask for partitioning."""
     return (d.wp_delta.notna() & (d.wp_delta <= -thresh)
             & d.wp_before.between(wp_lo, wp_hi))
 
 
 def events_B(d, min_loss=1):
     """
-    재료 순손실 — 논문 본문의 사건 B (사전등록 라벨로는 C).
+    Material net loss - Event B in the manuscript (labelled C in the
+    preregistration).
 
-    net_mat 은 prespeed.net_material_change 가 mat_diff 에서 만든다.
-    등가 교환은 net_mat == 0 이므로 자동으로 빠진다.
+    net_mat is built from mat_diff by net_material_change. An even trade
+    gives net_mat == 0 and so drops out on its own.
     """
     _require_net_mat(d)
     return d[d.net_mat.notna() & (d.net_mat <= -min_loss)]
@@ -184,31 +195,35 @@ def mask_B(d, min_loss=1):
 
 def events_B_see(d, min_value=1):
     """
-    사전등록판 사건 C = 논문의 사건 B (SEE > 0). **철회된 정의다.**
+    Event C as preregistered = the manuscript's Event B (SEE > 0).
+    **This definition was withdrawn.**
 
-    등가 교환을 배제하지 못해 사건의 55.7%가 순변화 0이었다.
-    부록 비교를 재생성할 때만 쓴다. docs/definitions.md 참조.
+    It failed to exclude even trades: 55.7% of its events had zero net
+    change. Use it only to regenerate the appendix comparison.
+    See docs/definitions.md.
     """
     if "see_loss" not in d.columns:
-        raise KeyError("see_loss 열이 없다. stage2v2 를 do_see=True 로 돌렸는가.")
+        raise KeyError("no see_loss column - was stage 2 run with do_see=True?")
     return d[d.see_loss.notna() & (d.see_loss >= min_value)]
 
 
 def _require_net_mat(d):
     if "net_mat" not in d.columns:
         raise KeyError(
-            "net_mat 열이 없다. scripts/run_prep.py 로 분석 테이블을 먼저 만들 것. "
-            "사전등록판 SEE 정의가 필요하면 events_B_see() 를 쓴다.")
+            "no net_mat column - build the analysis table with run.py prep "
+            "first. For the preregistered SEE definition use events_B_see().")
 
 
 def build_and_match(d, events, cal, window=EPOCH_WINDOW, seed=0,
                     max_events=None, strict=True):
     """
-    1:N 매칭 — 캘리퍼 조건을 만족하는 모든 후보의 창 z를 평균.
+    1:N matching - averages the window z over every candidate satisfying the
+    caliper.
 
-    후보 상한을 두지 않는다. 상한 50과 비교한 결과 처리 시간이 동일하고
-    (병목은 후보 필터링이지 창 조회가 아님) 효과 차이도 1e-5 수준이었다.
-    상한이 없으면 무작위 선택이 사라져 재현성도 개선된다.
+    There is no cap on the number of candidates. Against a cap of 50 the
+    running time was the same -- the bottleneck is filtering candidates, not
+    reading windows -- and the effects differed by about 1e-5. Without a cap
+    there is no random selection, which also makes the result reproducible.
     """
     if len(events) == 0:
         return pd.DataFrame(columns=[
@@ -251,7 +266,8 @@ def build_and_match(d, events, cal, window=EPOCH_WINDOW, seed=0,
 
 
 def reliability(epochs, min_events=10):
-    """홀짝 게임 분할 신뢰도 + Spearman-Brown, 분산 성분"""
+    """Split-half reliability by game parity, Spearman-Brown corrected,
+    with variance components."""
     e = epochs.dropna(subset=["effect"]).copy()
     if len(e) < 50:
         return None
@@ -278,11 +294,13 @@ def reliability(epochs, min_events=10):
 
 def moderation_by_time(epochs, bins=(0, 30, 60, 120, 180, 300, 600)):
     """
-    잔여 시간 구간별 효과 — 시간 압박은 사건이 아니라 맥락.
+    Effect by band of remaining time - time pressure is context, not an
+    event.
 
-    주의: 30초 미만은 산술적 제약이 강하므로 해석에서 분리할 것.
-    SE 는 **플레이어 클러스터**다. 예전 구현은 사건 단위 .sem() 이었는데,
-    같은 플레이어의 사건끼리 상관되므로 과소추정된다.
+    Note: below 30 seconds the arithmetic constraint is strong enough that
+    the band should be read separately. SEs are clustered **by player**. An
+    earlier implementation used an event-level .sem(), which underestimates
+    them because events from the same player are correlated.
     """
     e = epochs.dropna(subset=["effect"]).copy()
     e["clk_bin"] = pd.cut(e.clk_before, bins)

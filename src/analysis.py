@@ -37,22 +37,21 @@ LAGS = list(range(-6, 4))          # −6 … +3
 
 
 # ════════════════════════════════════════════════════════════════════
-# 1. 캘리퍼 매칭과 클러스터 SE
-# lagwise / pretrend / mixed 세 곳이 같은 매칭 로직을 각자 복사해 갖고
-# 있었다. 세 벌이 조금씩 달라질 위험이 있어 여기로 합쳤다.
+# 1. Caliper matching and clustered standard errors
+# lagwise, pretrend and mixed each held their own copy of the same matching
+# logic. Three copies can drift apart, so they were merged here.
 # 
-# 캘리퍼 결측 처리 (중요)
-#     strict=True 면 매칭 변수 중 하나라도 결측인 사건은 통째로 버린다.
-#     대조 풀은 dropna 로 걸러지므로, 이게 아니면 사건 쪽만 조용히
-#     사양이 바뀐다.
+# Missing values in the caliper (important)
+#     With strict=True, an event missing any matching variable is dropped
+#     entirely. The control pool is already filtered by dropna, so without
+#     this the specification would quietly differ between the two sides.
 # ════════════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────
-# 점검 안내
-# 점검 포인트 ★
-#   - caliper_mask: 사건 하나에 대해 대조 후보를 고르는 마스크.
-#     strict=True 면 매칭 변수 중 하나라도 결측인 사건은 통째로 버린다.
-#   - window_mean: 자기 수만 세므로 ply ± 2k 로 이동한다.
+# What to check here ★
+#   - caliper_mask: the mask that selects control candidates for one event.
+#     With strict=True, an event missing any matching variable is dropped.
+#   - window_mean: counts only the player's own moves, so it steps by 2k.
 # ─────────────────────────────────────────────────────────────
 
 
@@ -67,11 +66,12 @@ def is_missing(v):
 
 def caliper_mask(row, cand, cal, strict=True):
     """
-    사건 row 에 대해 대조 후보 DataFrame cand 의 행별 채택 여부.
+    For one event row, which rows of the candidate frame `cand` qualify.
 
-    반환: (mask, ok)
-      mask : np.ndarray[bool]  — cand 와 같은 길이
-      ok   : False 면 이 사건은 매칭 불가 (strict 에서 결측 변수 발생)
+    Returns (mask, ok)
+      mask : np.ndarray[bool], the same length as cand
+      ok   : False means this event cannot be matched -- under strict, one of
+             its matching variables is missing
     """
     m = np.ones(len(cand), bool)
     for v, w in cal.items():
@@ -89,16 +89,16 @@ def caliper_mask(row, cand, cal, strict=True):
 
 
 def build_zmap(d):
-    """(game_id, player, ply) → z 조회표"""
+    """Lookup table from (game_id, player, ply) to z."""
     return dict(zip(zip(d.game_id.values, d.player.values, d.ply.values),
                     d.z.values))
 
 
 def window_mean(zmap, gid, pl, ply, window, sign=1):
     """
-    사건 기준 플라이에서 ±window 구간의 z 평균.
-    같은 플레이어의 수만 세므로 실제 플라이는 ply + sign*2k.
-    반환: (평균 또는 nan, 실제로 관측된 개수)
+    Mean z over a window of +/-window around the event ply.
+    Only the player's own moves count, so the plies are ply + sign*2k.
+    Returns (the mean or nan, how many were actually observed).
     """
     zs = []
     for k in range(1, window + 1):
@@ -110,11 +110,14 @@ def window_mean(zmap, gid, pl, ply, window, sign=1):
 
 def control_pool(d, events, cal):
     """
-    대조 후보 풀: 사건 자신을 제외하고, 매칭 변수가 모두 관측된 행.
+    The control pool: rows with every matching variable observed, excluding
+    the events themselves.
 
-    주의 — 이 풀은 "무사건 수"가 아니라 "지금 분석 중인 사건이 아닌 수"다.
-    다른 종류의 사건(예: 블런더만 볼 때의 재료 손실)이나 다른 사건의
-    사후 창에 걸린 수가 후보로 남는다. 한계 섹션에 명시할 것.
+    Note: this is not "moves with no event" but "moves that are not the
+    event currently being analysed". Moves belonging to a different kind of
+    event (material losses, when blunders are under analysis) or falling
+    inside another event's post-window remain candidates. This is stated in
+    the limitations section.
     """
     ev_idx = set(zip(events.game_id.values, events.ply.values))
     keep = ~np.fromiter(
@@ -129,12 +132,13 @@ def control_pool(d, events, cal):
 
 def cluster_stats(df, value_col, player_col="player"):
     """
-    플레이어 클러스터 기준 요약.
+    Summary with standard errors clustered by player.
 
-    effect      사건 가중 평균 (논문 보고값)
-    se          플레이어 평균들의 SEM (클러스터 SE)
-    effect_pw   플레이어 동일가중 평균 — effect 와 se 의 가중이 다르므로
-                둘이 크게 어긋나면 클러스터 크기 불균형이 심하다는 신호다
+    effect      event-weighted mean (the value reported in the manuscript)
+    se          SEM of the per-player means (the clustered SE)
+    effect_pw   player-weighted mean. effect and se weight the data
+                differently, so a large gap between effect and effect_pw
+                signals badly unbalanced cluster sizes.
     """
     s = df[[player_col, value_col]].dropna()
     if len(s) == 0:
@@ -152,15 +156,16 @@ def cluster_stats(df, value_col, player_col="player"):
     }
 
 # ════════════════════════════════════════════════════════════════════
-# 2. lag별 분해
-# 기존 Stage 3는 사건 전 구간(t−3~t−1)을 평균 하나로 보고했다.
-# 그 평균은 두 상황을 구분하지 못한다:
+# 2. Decomposition by lag
+# An earlier version reported the pre-event window (t-3 to t-1) as a single
+# mean. That mean cannot distinguish two situations:
 # 
-#   계획 수립 후 실행:  t−3=0, t−2=큰 양수, t−1=음수  → 평균 +0.02
-#   국면 난이도:        t−3=+0.02, t−2=+0.02, t−1=+0.02 → 평균 +0.02
+#   plan then execute:  t-3=0, t-2=large positive, t-1=negative -> mean +0.02
+#   position difficulty: t-3=+0.02, t-2=+0.02, t-1=+0.02  -> mean +0.02
 # 
-# lag k = −6 … +3 각각에 대해 사건-대조 차이를 산출해 사전 구간의
-# **모양**을 관측한다. 창이 대국 밖으로 벗어나면 결측 → lag마다 n이 다르다.
+# Computing the event-control difference at each lag k = -6 ... +3 shows the
+# **shape** of the pre-event window rather than its average. A window running
+# past the start or end of the game is missing, so n differs by lag.
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -174,8 +179,8 @@ EMPTY_EPOCH_COLS = ["player", "tier", "game_id", "ply", "z_post", "z_ctrl",
 
 def lagwise(d, events, cal, lags=LAGS, seed=0, max_events=None, strict=True):
     """
-    사건별 lag 프로파일을 산출한다.
-    반환: DataFrame — 한 행이 한 사건, 컬럼 lag_-6 … lag_+3
+    Lag profile for each event.
+    Returns a DataFrame with one row per event and columns lag_-6 ... lag_+3.
     """
     if len(events) == 0:
         return pd.DataFrame(columns=["player", "tier", "n_ctrl", "z_at"]
@@ -184,7 +189,7 @@ def lagwise(d, events, cal, lags=LAGS, seed=0, max_events=None, strict=True):
     if max_events and len(events) > max_events:
         events = events.sample(max_events, random_state=seed)
 
-    # 메모리 절약: 사건이 있는 플레이어의 대국만 남긴다
+    # Keep only games belonging to players who have events, to save memory.
     players = set(events.player.unique())
     d = d[d.player.isin(players)]
     zmap = build_zmap(d)
@@ -193,7 +198,7 @@ def lagwise(d, events, cal, lags=LAGS, seed=0, max_events=None, strict=True):
     by_player = {p: g for p, g in pool.groupby("player")}
 
     def prof(gid, pl, ply):
-        """기준 플라이에서 각 lag의 z (없으면 nan)"""
+        """z at each lag from the reference ply, nan where absent."""
         return [zmap.get((gid, pl, ply + 2 * k), np.nan) for k in lags]
 
     recs = []
@@ -207,14 +212,14 @@ def lagwise(d, events, cal, lags=LAGS, seed=0, max_events=None, strict=True):
                 m, ok = caliper_mask(r, g, cal, strict=strict)
                 c = g[m] if ok else g.iloc[:0]
             else:
-                # 무통제: 같은 플레이어의 다른 플라이 중 무작위 20개
+                # Uncontrolled: 20 random plies from the same player
                 c = g.iloc[rng.choice(len(g), min(20, len(g)), replace=False)]
             ncand = len(c)
             if ncand:
                 mat = np.array([prof(x.game_id, x.player, x.ply)
                                 for x in c.itertuples()], dtype=float)
-                # 어떤 lag 는 후보 전부가 결측일 수 있다 (창이 대국 밖).
-                # nanmean 의 "Mean of empty slice" 경고를 삼킨다.
+                # At some lags every candidate is missing (the window falls
+                # outside the game). Suppress nanmean's "Mean of empty slice".
                 with np.errstate(invalid="ignore"),                         warnings.catch_warnings():
                     warnings.simplefilter("ignore", RuntimeWarning)
                     zc = np.nanmean(mat, axis=0)
@@ -227,7 +232,7 @@ def lagwise(d, events, cal, lags=LAGS, seed=0, max_events=None, strict=True):
 
 
 def summarize(prof_df, event_type, tier, spec, lags=LAGS, min_n=30):
-    """lag별 effect / SE(플레이어 클러스터) / n"""
+    """effect, clustered SE and n, by lag."""
     out = []
     for k in lags:
         col = f"lag{k:+d}"
@@ -242,8 +247,9 @@ def summarize(prof_df, event_type, tier, spec, lags=LAGS, min_n=30):
 
 def per_player_at(prof_df, lag=1, label=None):
     """
-    특정 lag 의 플레이어별 평균 효과.
-    Fig 2a 의 분포 패널과 data/derived/per_player_t1.csv 의 원천이다.
+    Mean effect per player at one lag.
+    This is the source of the distribution panel in Fig 2a and of
+    data/derived/per_player_t1.csv.
     """
     col = f"lag{lag:+d}"
     s = prof_df[["player", col]].dropna()
@@ -253,24 +259,24 @@ def per_player_at(prof_df, lag=1, label=None):
     return per
 
 # ════════════════════════════════════════════════════════════════════
-# 3. 사전 추세 검정 (pre-trend check)
-# Pfister & Foerster(2021)가 지적한 pre-error speeding 문제에 대응한다.
-# 사람은 오류를 범하기 전부터 이미 빨라져 있을 수 있고, 그 경우
-# "오류 후 정상 복귀"가 slowing으로 잘못 읽힌다.
+# 3. Pre-trend check
+# This addresses the pre-error speeding problem raised by Pfister and
+# Foerster (2021). A person may already be speeding up before the error, in
+# which case a return to their normal pace afterwards reads as slowing.
 # 
-#   사건 전 차이 없음 → 매칭 적절. 결과 강화
-#   사건 전 차이 있음 → 매칭 불완전. 보정 필요
+#   no pre-event difference -> matching is adequate; the result stands
+#   a pre-event difference -> matching is incomplete; correction is needed
 # ════════════════════════════════════════════════════════════════════
 
 def build_with_pretrend(d, events, cal, window=EPOCH_WINDOW, seed=0,
                         max_events=None, strict=True):
     """
-    사건/대조 에폭의 창 z를 사건 전후 모두 산출한다.
+    Window z for event and control epochs, on both sides of the event.
 
-    post : t+1 ~ t+window   (기존 종속변수)
-    pre  : t−window ~ t−1   (사전 추세 검정용)
+    post : t+1 to t+window   (the outcome variable)
+    pre  : t-window to t-1   (for the pre-trend check)
 
-    같은 플레이어의 수이므로 실제 플라이는 ±2k.
+    These are the player's own moves, so the plies step by 2k.
     """
     if len(events) == 0:
         return pd.DataFrame(columns=EMPTY_EPOCH_COLS)
@@ -286,7 +292,7 @@ def build_with_pretrend(d, events, cal, window=EPOCH_WINDOW, seed=0,
     for r in events.itertuples():
         zp, nobs = window_mean(zmap, r.game_id, r.player, r.ply, window, +1)
         zb, nbef = window_mean(zmap, r.game_id, r.player, r.ply, window, -1)
-        z_at = zmap.get((r.game_id, r.player, r.ply))     # 사건 수 자체
+        z_at = zmap.get((r.game_id, r.player, r.ply))     # the event move itself
 
         g = by_player.get(r.player)
         zc = zcb = zc_at = np.nan
@@ -322,16 +328,16 @@ def build_with_pretrend(d, events, cal, window=EPOCH_WINDOW, seed=0,
             "n_obs": nobs, "n_before": nbef, "n_ctrl": ncand,
         })
     e = pd.DataFrame(recs)
-    e["effect"] = e.z_post - e.z_ctrl          # 사후 (기존 종속변수)
-    e["pretrend"] = e.z_pre - e.z_ctrl_pre     # 사전 (0이어야 정상)
-    e["at_event"] = e.z_at - e.z_ctrl_at       # 사건 수 자체
-    e["did"] = e.effect - e.pretrend           # 이중차분 보정
+    e["effect"] = e.z_post - e.z_ctrl          # post-event: the outcome
+    e["pretrend"] = e.z_pre - e.z_ctrl_pre     # pre-event: should be 0
+    e["at_event"] = e.z_at - e.z_ctrl_at       # the event move itself
+    e["did"] = e.effect - e.pretrend           # difference-in-differences
     return e
 
 
 def pretrend_report(e, label=""):
     """
-    SE 는 플레이어 클러스터다. 예전 구현은 .sem() 을 사건 단위로 썼다.
+    SEs are clustered by player. An earlier version used an event-level .sem().
     """
     ok = e.dropna(subset=["effect", "pretrend"])
     out = {"label": label, "n": len(ok)}
@@ -341,19 +347,19 @@ def pretrend_report(e, label=""):
     return out
 
 # ════════════════════════════════════════════════════════════════════
-# 4. 사전등록된 혼합효과 모형
-# OSF Statistical models 사양:
+# 4. The preregistered mixed-effects model
+# As specified under Statistical models in the OSF preregistration:
 #     z_DV ~ event_condition + wp_level + remaining_time + legal_move_count
 #            + log(total_games) + (event_condition | player)
 # 
-# 각 사건 에폭이 두 행을 낳는다.
-#   event_condition = 1 : 사후 창(t+1~t+3)의 z 평균
-#   event_condition = 0 : 매칭된 대조 창들의 z 평균
+# Each event epoch produces two rows:
+#   event_condition = 1 : mean z over the post-window (t+1 to t+3)
+#   event_condition = 0 : mean z over the matched control windows
 # ════════════════════════════════════════════════════════════════════
 
 def build_pairs(d, events, cal, seed=0, max_events=None, strict=True,
                 window=1):
-    """사건/대조 쌍을 장형으로 반환 — 공변량 포함"""
+    """Event and control pairs in long form, with covariates."""
     if len(events) == 0:
         return pd.DataFrame(columns=["player", "tier", "wp_level",
                                      "remaining_time", "legal_moves", "ply",
@@ -416,8 +422,9 @@ def build_pairs(d, events, cal, seed=0, max_events=None, strict=True,
 
 def fit_mixed(long_df, activity=None, with_wp=False):
     """
-    무선 절편 + 무선 기울기 모형.
-    비수렴 시 (1) 무선 절편만 (2) 쌍 차이 순으로 후퇴한다.
+    Random intercept plus random slope.
+    If it does not converge, fall back to (1) random intercept only, then
+    (2) the paired difference.
     """
     import statsmodels.formula.api as smf
     import warnings
@@ -467,7 +474,7 @@ def fit_mixed(long_df, activity=None, with_wp=False):
         except Exception:
             fit = None
     if fit is None or not fit.converged:
-        # fallback 2: 쌍 차이
+        # fallback 2: the paired difference
         w = df.pivot_table(index="eid", columns="event_condition",
                            values="z_dv").dropna()
         diff = w[1] - w[0]
@@ -486,20 +493,21 @@ def fit_mixed(long_df, activity=None, with_wp=False):
 
 
 # ══════════════════════════════════════════════════════════════
-# 5. 개인 수준 신뢰도 — 관측수 의존성
+# 5. Individual-level reliability and its dependence on observation count
 # ══════════════════════════════════════════════════════════════
-# 논문 Table 2 와 Fig 2d/2e 가 여기서 나온다.
+# Table 2 and Fig 2d/2e come from here.
 #
-# 핵심 주장은 "블런더는 관측을 더 모아도 신뢰도가 오르지 않는다" 이므로,
-# **관측수를 맞춰놓고** 비교해야 한다. 그래서 플레이어마다 사건을 N개로
-# 잘라가며 신뢰도를 다시 잰다.
+# The claim is that reliability for blunders does not rise as observations
+# accumulate, so the comparison has to hold the observation count **fixed**.
+# Reliability is therefore remeasured with each player truncated to N events.
 #
-# 주의: 반분은 **대국 단위**로 나눈다. 같은 대국의 사건끼리는 상관되므로
-# 사건 단위로 나누면 신뢰도가 부풀려진다.
+# Note: the split is **by game**. Events within a game are correlated, so
+# splitting by event inflates the reliability.
 
 
 def restrict_events(epochs, n, seed=0):
-    """플레이어마다 사건을 무작위 n개로 제한한다. n개 미만인 사람은 제외."""
+    """Truncate each player to n events at random, dropping players with
+    fewer than n."""
     rng = np.random.default_rng(seed)
     keep = []
     for _, g in epochs.groupby("player", sort=False):
@@ -515,12 +523,13 @@ def reliability_curve(epochs, counts=(10, 20, 30, 40, 50, 60, 80, 100,
                                       150, 200, 237, 300),
                       seed=0, min_players=20, label=""):
     """
-    관측수별 반분 신뢰도 (Spearman-Brown 보정).
+    Split-half reliability by observation count, Spearman-Brown corrected.
 
-    반환 열: label, n_events_per_player, r, sb, n_players
-    플레이어가 min_players 미만으로 남는 관측수는 건너뛴다 — 논문이
+    Columns: label, n_events_per_player, r, sb, n_players
+    Counts leaving fewer than min_players are skipped. This is the situation
+    the manuscript describes as
     "beyond that count fewer than 25 players met the criterion, so no stable
-    estimate could be obtained" 라고 적은 상황이 이것이다.
+    estimate could be obtained".
     """
     from .prepare import reliability
     out = []
@@ -530,7 +539,7 @@ def reliability_curve(epochs, counts=(10, 20, 30, 40, 50, 60, 80, 100,
         if n_pl < min_players:
             out.append({"label": label, "n_events_per_player": n,
                         "r": np.nan, "sb": np.nan, "n_players": n_pl,
-                        "note": f"플레이어 {n_pl}명 (<{min_players}) — 추정 불가"})
+                        "note": f"{n_pl} players (<{min_players}) - cannot estimate"})
             continue
         rel = reliability(sub, min_events=max(2, n // 2))
         out.append({"label": label, "n_events_per_player": n,
@@ -542,9 +551,9 @@ def reliability_curve(epochs, counts=(10, 20, 30, 40, 50, 60, 80, 100,
 
 def bin_effects(ev, value_col, bins, effect_col="effect", label=""):
     """
-    구간별 효과와 플레이어 클러스터 SE.
+    Effect by bin, with standard errors clustered by player.
 
-    Fig 2b — 합법수 변화량 구간별로 효과를 낸다.
+    Fig 2b: the effect within bins of change in legal move count.
     """
     d = ev.dropna(subset=[value_col, effect_col]).copy()
     d["_bin"] = pd.cut(d[value_col], bins)

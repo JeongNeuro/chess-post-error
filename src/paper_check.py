@@ -52,10 +52,10 @@ from .config import DERIVED, SAMPLE, TIERS, TITLE_TIER
 from .config import BLUNDER_THRESH as BLUNDER_THRESH_PP
 
 # ══════════════════════════════════════════════════════════════
-# 논문 전사값
+# Values transcribed from the manuscript
 # ══════════════════════════════════════════════════════════════
 
-# Table 1 — 표본 구성 (tier: 전체, ≥30판, 통과율%, 표집)
+# Table 1 - sample composition (tier: total, >=30 games, pass %, drawn)
 TABLE1 = {
     "1300-1600": (201_949, 41_882, 20.7, 500),
     "1600-1900": (148_391, 40_643, 27.4, 500),
@@ -88,7 +88,7 @@ N_MOVES_TITLE = 3_943_539
 #
 #   Events per game agrees (4.21 against 4.19), so the subset is
 #   representative; it is the absolute counts that belong to another run.
-N_EVENTS_MATERIAL = 543_987     # 순손실 정의, 두 파일 합산
+N_EVENTS_MATERIAL = 543_987     # net-loss definition, both tables summed
 N_EVENTS_BLUNDER = 88_548
 EVENTS_PER_GAME = 4.19
 N_PLAYERS_ANALYSED = 2_014      # rows in prepared + prepared_fm
@@ -98,36 +98,38 @@ N_GAMES_ANALYSED = 129_791
 # attached, which is how a stale value survives even when the data is present.
 N_EVENTS_MATERIAL_REGISTERED = 975_871
 
-# Method — 개정 검증 (원정의 사건 중)
+# Method - the revision check, among events under the original definition
 REVISION_SHARE_ZERO = 54.1      # %
 REVISION_SHARE_GAIN = 12.3      # %
 # The verification subsample is gone: the shares are computed over all
 # 975,871 registered-criterion events now, which is the stronger claim.
 
 # Results, "Effects by Co-occurrence of Material Loss" / Fig 1c / Fig 2f
-#   label: (효과, SE, t)
-# label: (효과, SE, t, 플레이어 수)
-# 2026-09 개정판에서 플레이어 수가 추가되었다. SE 와 함께 보면 클러스터
-# 표준편차가 역산되므로, 저장소 산출물이 같은 실행인지 바로 확인할 수 있다.
+#   label: (effect, SE, t)
+# label: (effect, SE, t, players)
+# The September 2026 revision added the player counts. Together with the SE
+# they imply the between-player SD, which makes it immediately visible
+# whether the repository's outputs come from the same run.
 GROUPS = {
     "blunder_only": (+0.209, 0.017, 12.3, 1_629),
     "blunder_loss": (-0.407, 0.017, -23.4, 1_642),
     "loss_only":    (-0.537, 0.015, -35.3, 1_781),
 }
-# 같은 절 — 집단 간 차이.
+# The same section - the between-group difference.
 #
-# 방향: **blunder_only − blunder_loss**.
-# 원고 v6 이 본문에 이 방향을 명시한다 ("Taking the difference as
-# blunder-only minus blunder-with-material-loss"). v5 까지는 방향이 적혀
-# 있지 않아 값을 옮길 때마다 부호가 뒤집혔고, 실제로 한 문장 안에 두
-# 방향이 섞인 적이 있다. 아래 GROUP_DIFF_ORDER 가 계산 방향을 고정한다.
+# Direction: **blunder_only minus blunder_loss**.
+# Manuscript v6 states this in the text ("Taking the difference as
+# blunder-only minus blunder-with-material-loss"). Up to v5 the direction was
+# not written down, so the sign flipped each time the values were copied --
+# at one point a single sentence carried both directions. GROUP_DIFF_ORDER
+# below fixes the direction of the computation.
 GROUP_DIFF_ORDER = ("blunder_only", "blunder_loss")
 GROUP_DIFF = {-3: -0.001, -2: +0.010, -1: -0.018,
               +1: +0.616, +2: +0.018, +3: +0.048}
 GROUP_DIFF_SE_T1 = 0.024
 EVENT_MOVE_BLUNDER_LOSS = +0.486
 
-# Results, "When the Effect Occurs" / Fig 1a·1b — 다섯 층의 범위
+# Results, "When the Effect Occurs" / Fig 1a-1b - the range across five tiers
 # Results, tier-wise profiles. Five tiers now, and blunders changed sign:
 # the manuscript reports "slower than control in every tier".
 #
@@ -150,8 +152,9 @@ TIER_RANGE_WIDTH = {"material": 0.073, "blunder": 0.019}
 # "all |t| > 32"
 TIER_MATERIAL_T_MIN = 32
 
-# 원고 v6 은 층별 lag 을 "the four untitled tiers" 로 서술한다.
-# 타이틀 층은 더 긴 기간에서 뽑혀 별도 보고된다 (Table 1·2 는 다섯 층).
+# Manuscript v6 describes the tier-wise lags as "the four untitled tiers".
+# The titled tier is drawn from a longer period and reported separately
+# (Tables 1 and 2 cover all five).
 TIER_COUNT_IN_TEXT = 5
 
 # Results, "Magnitude of Material Lost" / "Direction of loss" / Fig 2c
@@ -164,13 +167,16 @@ DOSE_OPP = {1: (+0.219, 0.014), 9: (+0.027, 0.016)}
 
 # Results, "Number of available options" / Fig 2b
 LEGAL_BIN_DIFF_RANGE = (-0.693, -0.382)
-LEGAL_BIN_DIFF_FLAT = -0.689     # 합법수가 거의 안 변하는 구간
+LEGAL_BIN_DIFF_FLAT = -0.689     # the bin where legal move count barely changes
 # "Restricting to nine-point losses ... widens the separation to −1.04"
-# 이 값은 9점 제한 실행에서 나온 것으로 legal_bins.csv 에 없다 — 대조 불가.
+# This came from the nine-point-restricted run and is not in legal_bins.csv,
+# so it cannot be compared.
 LEGAL_BIN_NINE_POINT_MAX = -0.990
 
-# Table 2 — 개인 수준 신뢰도 (신뢰도, sigma_b, 인당 사건 중앙값, 인원)
-# v8 에서 두 행으로 줄었다 (층 합침). 선별 규칙이 Method 에 명시됐다.
+# Table 2 - individual-level reliability
+# (reliability, sigma_b, median events per player, players)
+# v8 reduced this to two rows by pooling tiers, and stated the selection
+# rule in the Method.
 # Table 2, four rows. The manuscript labels the untitled rows "untitled";
 # the CSV labels them "lower".
 RELIABILITY = {
@@ -179,10 +185,10 @@ RELIABILITY = {
     "Material loss, titled": (+0.739, 0.122, 173, 62),
     "Blunder, titled":       (-0.032, 0.051, 32, 122),
 }
-# Method / Table 2 캡션이 말하는 선별 기준
+# The selection rule as stated in the Method and the Table 2 caption
 RELIABILITY_THRESHOLD = {"Material loss, lower": 237, "Blunder, lower": 40,
                          "Material loss, titled": 237, "Blunder, titled": 40}
-# Results — 관측수별 신뢰도
+# Results - reliability by observation count
 # Results, "Reliability depended on the number of events retained per player"
 # The manuscript quotes 50 events and above: below that the truncated
 # sample changes composition and the curve is not monotone (.263 at 10,
@@ -196,13 +202,13 @@ RELIABILITY_CURVE_BLUNDER = {10: -0.039, 20: -0.036, 30: -0.051}
 # "crossing the conventional .70 threshold between 150 and 200 events"
 RELIABILITY_CROSSING = (150, 200)
 RELIABILITY_THRESHOLD_VALUE = 0.70
-# Discussion — 같은 관측 수에서의 대비
+# Discussion - the contrast at equal observation counts
 # The manuscript no longer contrasts the two at matched counts:
 # blunders stop at 30 events and material loss starts at 50.
-CONTRAST_AT = {}   # (블런더, 기물손실)
+CONTRAST_AT = {}   # (blunder, material loss)
 # "At matched observation counts the two event types differ by roughly .17."
 CONTRAST_ROUGHLY = 0.17
-# Abstract 가 인용하는 값
+# The value quoted in the abstract
 ABSTRACT_RELIABILITY = 0.685
 FLANKER_CURVE = {10: 0.233, 30: 0.358, 50: 0.544, 80: 0.676}
 
@@ -212,17 +218,18 @@ FLANKER = {
     "err_rate_after_correct": 10.2,
     "err_rate_after_error": 21.4,
     "n_trials": 91_741,
-    "n_trials_post_error": 91_569,   # 각 참가자 첫 시행 제외
+    "n_trials_post_error": 91_569,   # each participant's first trial excluded
     "error_rate": 11.4,
     "n_participants": 172,
 }
 
-# Results, "Robustness" — 사전등록 여섯 사양
-# ★ 이 값들은 `run.py robustness` 의 산출물이다. 그 명령은 원래 저장소에
-#   없어서 재구성한 것이고, 원 분석의 강건성 코드는 남아 있지 않다.
-#   Method 가 이 사양을 기술하는지 확인할 것. docs/corrections.md 참조.
+# Results, "Robustness" - the six preregistered specifications
+# ★ These come from `run.py robustness`. That command did not exist in the
+#   original repository and was reconstructed; the original robustness code
+#   has not survived. Check that the Method describes these specifications.
+#   See docs/corrections.md.
 #
-# level 은 robustness.csv 의 표기를 그대로 쓴다 (문자열 비교).
+# `level` uses robustness.csv's own spelling; the comparison is on strings.
 # Baseline for these is -0.513: all Event B occurrences, not the
 # material-loss-only subset (-0.537).
 ROBUSTNESS = {
@@ -249,7 +256,7 @@ CALIPER_RANGE = (-0.525, -0.493)
 # supplementary material: they use a three-move window, so their values do
 # not sit beside the single-move numbers here.
 
-# Discussion — 구성 논증
+# Discussion - the composition argument
 #   "Weighting +0.121 and −0.567 by their observed frequencies gives −0.053"
 # "Weighting +0.209 and -0.407 by their observed frequencies gives +0.055
 #  at the 10-point threshold, close to the +0.066 observed."
@@ -262,9 +269,10 @@ COMPOSITION = {"share_loss_10pp": 0.25, "share_loss_30pp": 0.31,
 
 # "Restricting to nine-point losses ... −1.04 at its maximum"
 QUEEN_BIN_MAX = -0.990
-# 원고는 "Raising the measurement floor to 3 s reduced the effect by 18%"
-# 라고 쓴다. 아래 값들에서 계산한 감쇠율이 그것과 맞는지 확인한다.
-# (전체 표본 robustness 실행 전까지는 원고 값을 그대로 둔다)
+# The manuscript says "Raising the measurement floor to 3 s reduced the
+# effect by 18%". This checks the attenuation implied by the values below
+# against that claim. Until robustness is run on the full sample, the
+# manuscript's own figure is kept here.
 ROBUSTNESS_TAU3_ATTENUATION = 0.12
 
 # Results, "Mixed-effects models"
@@ -289,18 +297,18 @@ MIXED_MAIN_PLAYERS = 1_724
 # "The model with random slopes did not converge, so we report the
 #  random-intercept specification."
 MIXED_MAIN_PATH = "random intercept (fallback 1)"
-# 같은 표본에서 두 접근이 얼마나 가까운가
+# How close the two approaches are on the same sample
 MIXED_VS_PAIRED_MAX = 0.005
 MIXED_PAIRS = [("mixed model (main)", "paired difference (main)"),
                ("mixed model (with wp, engine-eval subset)",
                 "paired difference (with wp, engine-eval subset)")]
 
-TOL = 0.002          # 효과·SE 기본 허용 오차
-TOL_RANGE = 0.003    # 범위 끝값
+TOL = 0.002          # default tolerance for effects and SEs
+TOL_RANGE = 0.003    # tolerance at the ends of a range
 
 
 # ══════════════════════════════════════════════════════════════
-# 대조
+# Comparisons
 # ══════════════════════════════════════════════════════════════
 
 class Report:
@@ -352,7 +360,7 @@ def run(verbose=True):
 
     r = Report()
 
-    # ── 표본 ────────────────────────────────────────────────
+    # -- Sample ---------------------------------------------
     for tier, (tot, elig, rate, n) in TABLE1.items():
         r.check(f"Table 1 eligibility rate {tier}", rate, 100 * elig / tot,
                 tol=0.06, kind="PAPER")
@@ -365,7 +373,7 @@ def run(verbose=True):
     else:
         r.remark(f"{SAMPLE} is absent - skipping the sample comparison")
 
-    # ── 세 집단 (주 결과) ───────────────────────────────────
+    # -- The three groups (main result) ----------------------
     sp = _read("se_split.csv")
     pp = _read("per_player_t1.csv")
     if sp is not None:
@@ -409,8 +417,9 @@ def run(verbose=True):
             float(np.hypot(GROUPS["blunder_loss"][1], GROUPS["blunder_only"][1])),
             tol=0.001, kind="PAPER")
 
-    # 논문이 보고한 (SE, n) 이 함축하는 플레이어간 표준편차.
-    # 저장소 산출물과 견주면 같은 실행인지 즉시 드러난다.
+    # The between-player SD implied by the (SE, n) the manuscript reports.
+    # Set beside the repository's own output it shows at once whether the
+    # two come from the same run.
     for g, (pe, pse, pt, pn) in GROUPS.items():
         r.remark(f"{g}: paper SE {pse:.3f} x sqrt({pn:,}) => between-player SD "
                  f"{pse * np.sqrt(pn):.3f}")
@@ -426,9 +435,9 @@ def run(verbose=True):
                          f"se_split e1 {float(row.iloc[0].e1):+.3f} disagree - "
                          f"the two files came from different runs")
 
-    # ── 층별 범위 ───────────────────────────────────────────
-    # 층별 프로파일: lag_profiles.csv 가 층별 행을 가지고 있으면 그것을 쓰고,
-    # 없으면 src/external_values.py 의 전사값으로 떨어진다.
+    # -- Tier-wise ranges ------------------------------------
+    # Tier-wise profiles: use lag_profiles.csv when it carries per-tier rows,
+    # otherwise fall back to the transcribed values in src/external_values.py.
     lp_t = _read("lag_profiles.csv")
     M = B = None
     if lp_t is not None and {"event_type", "tier", "lag", "effect"} <= set(lp_t.columns):
@@ -486,7 +495,7 @@ def run(verbose=True):
                     ("DATA", f"{'tier material t+1, smallest |t|':<46} "
                              f"paper >{TIER_MATERIAL_T_MIN}      repo {got:>9.1f}"))
 
-        # 합법수 구간 — legal_bins.csv 가 있으면 그것을, 없으면 전사값을.
+        # Legal-move bins: legal_bins.csv when present, transcribed values otherwise.
         lb = _read("legal_bins.csv")
         if lb is not None and {"label", "bin", "effect"} <= set(lb.columns):
             piv = lb.pivot_table(index="bin", columns="label", values="effect")
@@ -508,9 +517,9 @@ def run(verbose=True):
         flat = d[len(d) // 2] if len(d) >= 5 else d[0]
         r.check("legal-move flat bin", LEGAL_BIN_DIFF_FLAT, flat, tol=0.006)
 
-        # Table 2 — reliability.csv 에 네 층 행이 있으면 그것을 본다.
+        # Table 2: use reliability.csv when it holds the four tier rows.
         rl = _read("reliability.csv")
-        T2_KEYS = list(RELIABILITY)          # 원고 Table 2 의 행 이름
+        T2_KEYS = list(RELIABILITY)          # row names in the manuscript's Table 2
         csv_t2 = None
         if rl is not None and "label" in rl.columns:
             have = set(rl.label)
@@ -536,9 +545,11 @@ def run(verbose=True):
             r.check(f"events per player, {key}", pev, float(row["events_per_player"]),
                     tol=1)
             r.check(f"player count, {key}", pn, float(row["n_players"]), tol=1)
-            # v9 의 Method 는 선별이 **매칭 전** 사건 수이고 매칭이 일부를
-            # 걸러내 중앙값이 기준보다 낮아진다고 설명한다. 그 설명이
-            # 매칭 잔존율(원고의 37~39% 제외 = 61~63% 잔존)과 맞는지 본다.
+            # The Method in v9 explains that selection is on the event count
+            # **before** matching, and that matching removes some, so the
+            # median falls below the threshold. This checks that explanation
+            # against the retention rate implied by the manuscript's stated
+            # exclusion of 37-39% (i.e. 61-63% retained).
             thr = RELIABILITY_THRESHOLD.get(key)
             if thr:
                 keep = float(row["events_per_player"]) / thr
@@ -549,7 +560,7 @@ def run(verbose=True):
                         f"({keep:.0%} kept). The manuscript states only that "
                         f"the median falls below the threshold.")
 
-        # 관측수별 곡선 — reliability_curve.csv 우선
+        # The curve by observation count - reliability_curve.csv first
         rc = _read("reliability_curve.csv")
         Rc = None
         if rc is not None and {"label", "n_events_per_player", "sb"} <= set(rc.columns):
@@ -570,7 +581,7 @@ def run(verbose=True):
         for n, v in RELIABILITY_CURVE.items():
             r.check(f"reliability curve n={n}", v, Rc.get(n), tol=0.002)
 
-        # Discussion 의 대비 — v8 이 인용하는 네 값
+        # The contrast in the Discussion - the four values v8 quotes
         if rc is not None and "label" in rc.columns:
             gb = rc[rc.label.str.contains("lower|untitled", case=False)]
             gb = gb[gb.label.str.startswith("Blunder")]
@@ -581,14 +592,14 @@ def run(verbose=True):
             for n, v in RELIABILITY_CURVE_BLUNDER.items():
                 r.check(f"blunder curve n={n}", v, bl.get(n), tol=0.002)
 
-            # "gap between the two event types" — 가장 큰 공통 관측수에서 본다
+            # "gap between the two event types": read at the largest shared count
             common = sorted(set(bl) & set(Rc))
             if common:
                 n = common[-1]
                 r.check(f"contrast magnitude (n={n})", CONTRAST_ROUGHLY,
                         float(Rc[n]) - float(bl[n]), tol=0.03)
 
-        # "interval where .70 is crossed" — 곡선에서 실제로 어디서 넘는지
+        # "interval where .70 is crossed": where the curve actually crosses
         if Rc:
             ns = sorted(Rc)
             over = [n for n in ns if Rc[n] >= RELIABILITY_THRESHOLD_VALUE]
@@ -602,7 +613,7 @@ def run(verbose=True):
                         f"paper {lo}-{hi}      repo "
                         f"{prev}~{first} ({Rc[first]:.3f} at {first})"))
 
-        # Abstract 가 인용하는 값이 Table 2 와 같은지
+        # Does the value quoted in the abstract match Table 2?
         mt = "Material loss, lower"
         if csv_t2 is not None and mt in csv_t2.index:
             r.check("reliability quoted in the Abstract", ABSTRACT_RELIABILITY,
@@ -619,8 +630,9 @@ def run(verbose=True):
                 F["err_rate_after_correct"], tol=0.05)
         r.check("flanker error rate after error", FLANKER["err_rate_after_error"],
                 F["err_rate_after_error"], tol=0.05)
-        # 원고는 전체 시행수(91,741)와 사후분석 시행수(91,569)를 둘 다 적는다.
-        # external_values 의 합계는 후자와 맞아야 한다.
+        # The manuscript gives both the total trial count (91,741) and the
+        # post-error analysis count (91,569). The total in external_values
+        # must match the latter.
         trials = F["n_correct"] + F["n_error"]
         r.check("flanker post-error trial count", FLANKER["n_trials_post_error"],
                 float(trials), tol=0.5)
@@ -655,7 +667,7 @@ def run(verbose=True):
     else:
         r.remark("se_dose.csv is absent - skipping the dose comparison")
 
-    # ── 강건성 ─────────────────────────────────────────────
+    # -- Robustness -----------------------------------------
     rb = _read("robustness.csv")
     if rb is not None and not rb.empty:
         rb = rb.copy()
@@ -710,7 +722,7 @@ def run(verbose=True):
     else:
         r.remark("robustness.csv is absent - create it with python run.py robustness")
 
-    # ── 혼합효과 모형 ──────────────────────────────────────
+    # -- Mixed-effects models -------------------------------
     mx = _read("mixed_B.csv")
     if mx is not None and not mx.empty:
         col = ("coefficient" if "coefficient" in mx.columns
@@ -757,7 +769,7 @@ def run(verbose=True):
     else:
         r.remark("mixed_B.csv is absent - create it with python run.py mixed B")
 
-    # ── 제목의 분석 수 ─────────────────────────────────────
+    # -- The move count in the title ------------------------
     from .config import PREPARED, PREPARED_FM
     import pyarrow.parquet as pq
     parts, missing = {}, []
@@ -842,7 +854,7 @@ def run(verbose=True):
                 float(total), tol=max(50_000, 0.02 * N_MOVES_TITLE))
         r.remark(f"title count is {detail} = {total:,}")
 
-    # ── 9점 제한 합법수 구간 ───────────────────────────────
+    # -- Legal-move bins, nine-point restriction ------------
     qb = _read("legal_bins_queen.csv")
     if qb is not None and {"label", "bin", "effect"} <= set(qb.columns):
         piv = qb.pivot_table(index="bin", columns="label", values="effect")
@@ -855,7 +867,7 @@ def run(verbose=True):
         r.remark("legal_bins_queen.csv is absent - cannot check the "
                  "manuscript's \"-1.04 at its maximum\"")
 
-    # ── 구성 논증의 산술 ───────────────────────────────────
+    # -- The arithmetic of the composition argument ---------
     if sp is not None:
         bo = sp[sp.label == "blunder_only"]
         bl2 = sp[sp.label == "blunder_loss"]
@@ -866,7 +878,7 @@ def run(verbose=True):
             r.check("compositional weighted average, predicted", COMPOSITION["predicted_10pp"], pred,
                     tol=0.004, kind="PAPER")
 
-    # ── lag_profiles 의 사건 정의 ───────────────────────────
+    # -- Event definitions in lag_profiles ------------------
     lp = _read("lag_profiles.csv")
     if lp is not None and "event_type" in lp.columns:
         kinds = set(lp.event_type.unique())
@@ -881,15 +893,17 @@ def run(verbose=True):
                         f"so this file may have been built with the withdrawn SEE definition. "
                         f"Regenerate with python run.py lag-all.")
 
-    # ── 파일 사이의 일관성 ─────────────────────────────────
+    # -- Consistency between files --------------------------
     #
-    # 여기서부터는 논문과의 대조가 아니라 **저장소 산출물끼리** 모순이
-    # 없는지 본다. 원래 figures/make_figures.py 의 check_consistency() 에
-    # 있던 검사인데, 그림 코드를 저장소에서 빼면서 이쪽으로 옮겼다.
+    # From here on the comparison is not against the manuscript but between
+    # the repository's own outputs. These checks lived in check_consistency()
+    # in figures/make_figures.py and moved here when the figure code was
+    # removed from the repository.
     #
-    # ★ 이 검사들이 잡는 것: 공개 전 점검에서 효과값은 전부 맞는데
-    #   표준오차만 1.6배 다른 상태가 발견된 적이 있다. 두 파일이 서로
-    #   다른 실행에서 나왔기 때문이었다. 논문 대조만으로는 안 잡힌다.
+    # ★ What these catch: a pre-release check once found every effect value
+    #   correct while the standard errors differed by a factor of 1.6, because
+    #   two files had come from different runs. Comparing against the
+    #   manuscript alone does not find that.
     sp2, pp2 = _read("se_split.csv"), _read("per_player_t1.csv")
 
     if sp2 is not None and "np1" not in sp2.columns:

@@ -43,7 +43,7 @@ DEPTH = 18
 MULTIPV = 5
 MATE_CP = 10000
 
-# 예측 모형 설명변수 — stage2v2 SCHEMA 에 이미 들어 있는 열
+# Predictors for the model - columns already present in the stage 2 schema.
 CX_FEATURES = ["n_legal", "max_see_mine", "mat_diff", "n_checks"]
 
 
@@ -56,8 +56,8 @@ class Engine:
                 text=True, bufsize=1)
         except FileNotFoundError as exc:
             raise FileNotFoundError(
-                f"Stockfish 를 찾지 못했다 ({path!r}). "
-                "설치 후 CHESS_STOCKFISH 환경변수로 경로를 지정할 것.") from exc
+                f"Stockfish not found ({path!r}). Install it and set "
+                "CHESS_STOCKFISH to its path.") from exc
         self._cmd("uci")
         self._wait("uciok")
         self._cmd(f"setoption name Threads value {threads}")
@@ -77,7 +77,8 @@ class Engine:
                 return line
 
     def analyse(self, fen, depth=DEPTH):
-        """상위 MULTIPV 수의 평가값(수를 두는 쪽 관점, 센티폰) 반환"""
+        """Evaluations of the top MULTIPV moves, in centipawns, from the
+        mover's point of view."""
         self._cmd("ucinewgame")
         self._cmd(f"position fen {fen}")
         self._cmd(f"go depth {depth}")
@@ -117,34 +118,35 @@ class Engine:
 
 
 def complexity(scores):
-    """상위 수 평가값의 표준편차. 값이 클수록 복잡한 국면"""
+    """SD of the top-move evaluations. Larger means a more complex position."""
     if len(scores) < 2:
         return np.nan
     return float(np.std(scores))
 
 
 def gap_top2(scores):
-    """최선수와 차선수의 격차 — 대안 복잡도 지표"""
+    """Gap between best and second-best move - an alternative complexity index."""
     if len(scores) < 2:
         return np.nan
     return float(scores[0] - scores[1])
 
 
-# ── 복잡도 예측 모형 ────────────────────────────────────────────
+# -- Complexity prediction model ---------------------------------
 
 def fit_cx_model(df, target="sd", features=CX_FEATURES):
     """
-    측정된 복잡도(target)를 국면 특징으로 회귀한다.
+    Regress measured complexity (target) on position features.
 
-    df   : run_cx.py 산출 + 대응하는 stage 2 특징이 붙은 테이블
-    반환 : {"features": [...], "coef": [...], "intercept": float,
-            "r": 학습 표본 내 상관, "n": 관측수}
+    df      : cx output joined to the corresponding stage 2 features
+    Returns : {"features": [...], "coef": [...], "intercept": float,
+               "r": in-sample correlation, "n": observations}
 
-    목표는 설명이 아니라 매칭용 예측값이므로 최소제곱 선형으로 충분하다.
+    The aim is a predicted value for matching, not explanation, so ordinary
+    least squares is enough.
     """
     d = df.dropna(subset=[target] + list(features))
     if len(d) < 50:
-        raise ValueError(f"표본이 너무 작다 (n={len(d)}).")
+        raise ValueError(f"sample too small (n={len(d)}).")
     X = d[list(features)].to_numpy(float)
     y = d[target].to_numpy(float)
     Xd = np.column_stack([np.ones(len(X)), X])
@@ -156,11 +158,11 @@ def fit_cx_model(df, target="sd", features=CX_FEATURES):
 
 
 def predict_cx(d, model):
-    """모형으로 cx_pred 를 만든다. 특징이 결측이면 NaN."""
+    """Apply the model to produce cx_pred. NaN where a feature is missing."""
     feats = model["features"]
     missing = [f for f in feats if f not in d.columns]
     if missing:
-        raise KeyError(f"특징 열이 없다: {missing}")
+        raise KeyError(f"missing feature columns: {missing}")
     X = d[feats].to_numpy(float)
     out = model["intercept"] + X @ np.asarray(model["coef"], float)
     return pd.Series(out, index=d.index).where(d[feats].notna().all(axis=1))

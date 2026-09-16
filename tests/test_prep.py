@@ -1,9 +1,10 @@
-"""분석 테이블 생성 단위 테스트 — net_mat, z_pre3, 사건 정의
+"""Unit tests for building the analysis table - net_mat, z_pre3, events.
 
-z_pre3 는 **플라이 인덱스 기준**이어야 한다. 예전 구현은 groupby().shift()
-로 행 위치 기준이었는데, 측정 하한(move_time < 1초)으로 중간 수가 빠지면
-"직전 3수"가 실제로는 더 먼 과거를 가리킨다.
-test_z_pre3_skips_missing_ply 가 그 경우다.
+z_pre3 must be taken **by ply index**. An earlier implementation used
+groupby().shift(), which works by row position: when the measurement floor
+(move_time < 1s) removes an intervening move, "the preceding three moves"
+silently reaches further back than it should.
+test_z_pre3_skips_missing_ply covers that case.
 """
 
 import numpy as np
@@ -32,11 +33,12 @@ def test_net_mat_is_next_own_move():
     out = net_material_change(d)
     # ply10: mat(12) - mat(10) = -1 ; ply12: mat(14)-mat(12) = 0
     assert out.net_mat.tolist()[:3] == [-1.0, 0.0, -3.0]
-    assert np.isnan(out.net_mat.iloc[-1])   # 다음 자기 수가 없다
+    assert np.isnan(out.net_mat.iloc[-1])   # no following move by this player
 
 
 def test_even_exchange_is_not_an_event():
-    """등가 교환은 순변화 0 → 사건이 아니다. 철회된 SEE 정의와의 차이점."""
+    """An even trade nets to zero and is not an event. This is where the
+    definition differs from the withdrawn SEE one."""
     d = frame([10, 12], mat=[0.0, 0.0])
     out = net_material_change(d)
     assert out.net_mat.iloc[0] == 0.0
@@ -44,7 +46,7 @@ def test_even_exchange_is_not_an_event():
 
 
 def test_net_mat_gap_in_plies_gives_nan():
-    """ply+2 가 없으면(수가 빠졌으면) 더 먼 수로 건너뛰지 않는다."""
+    """When ply+2 is absent the search does not reach past it."""
     d = frame([10, 14], mat=[0.0, -3.0])
     out = net_material_change(d)
     assert np.isnan(out.net_mat.iloc[0])
@@ -64,19 +66,19 @@ def test_z_pre3_is_mean_of_three_previous_own_moves():
     d = frame([10, 12, 14, 16], z=[1.0, 2.0, 3.0, 9.0])
     out = add_pre_speed(d, k=3)
     assert np.isnan(out.z_pre3.iloc[0])
-    assert np.isnan(out.z_pre3.iloc[2])          # 앞에 두 수뿐
+    assert np.isnan(out.z_pre3.iloc[2])          # only two preceding moves
     assert out.z_pre3.iloc[3] == pytest.approx((1.0 + 2.0 + 3.0) / 3)
 
 
 def test_z_pre3_skips_missing_ply():
-    """중간 수가 측정 하한으로 빠지면 z_pre3 는 결측이어야 한다.
+    """z_pre3 must be missing when the measurement floor removes a move.
 
-    행 위치 기준(shift)이면 ply 8 을 직전 수로 잘못 쓴다.
+    Shifting by row position would take ply 8 as the preceding move.
     """
-    d = frame([8, 10, 14, 16], z=[5.0, 1.0, 2.0, 3.0])   # ply 12 가 없다
+    d = frame([8, 10, 14, 16], z=[5.0, 1.0, 2.0, 3.0])   # ply 12 is absent
     out = add_pre_speed(d, k=3)
     assert np.isnan(out.z_pre3.iloc[3]), (
-        "ply 기준이 아니라 행 위치 기준으로 shift 하고 있다")
+        "shifting by row position instead of by ply")
 
 
 def test_z_pre3_rejects_duplicate_keys():
@@ -85,15 +87,15 @@ def test_z_pre3_rejects_duplicate_keys():
         add_pre_speed(d)
 
 
-# ── 사건 정의 ───────────────────────────────────────────────
+# -- Event definitions ---------------------------------------
 
 def test_events_B_uses_net_mat_not_see():
     d = frame([10, 12], mat=[0.0, -3.0])
     d = net_material_change(d)
-    d["see_loss"] = [9.0, 9.0]          # SEE 는 크게 나오지만
+    d["see_loss"] = [9.0, 9.0]          # large under SEE
     d["tier"] = "1300-1600"
-    assert len(events_B(d)) == 1        # net 기준으로는 1건
-    assert len(events_B_see(d)) == 2    # SEE 기준으로는 2건
+    assert len(events_B(d)) == 1        # one event on the net definition
+    assert len(events_B_see(d)) == 2    # two on the SEE definition
 
 
 def test_events_B_requires_net_mat_column():
@@ -120,16 +122,17 @@ def test_split_groups_are_exclusive():
     hasA, hasB = mask_A(d), mask_B(d)
     groups = [(hasA & ~hasB), (hasA & hasB), (hasB & ~hasA)]
     total = sum(g.sum() for g in groups)
-    assert total == (hasA | hasB).sum()      # 겹치지 않고 빠지지 않는다
+    assert total == (hasA | hasB).sum()      # no overlap and nothing dropped
 
 
-# ── 빈 사건 집합 (회귀 테스트) ──────────────────────────────
+# -- Empty event sets (regression) ---------------------------
 
 def test_builders_handle_empty_events():
-    """사건이 0건이면 빈 프레임을 돌려줘야 한다 (예전엔 AttributeError).
+    """Zero events must give back an empty frame (this used to raise
+    AttributeError).
 
-    run.py bins 가 '상대가 재료를 잃은 사건'을 찾지 못하는 데이터에서
-    z_post 접근으로 죽었다.
+    run.py bins died reaching for z_post on data where it found no events
+    in which the opponent lost material.
     """
     from src.analysis import lagwise, build_with_pretrend, build_pairs
     from src.prepare import build_and_match

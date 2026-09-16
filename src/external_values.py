@@ -27,22 +27,24 @@ History of this file
 
 TIER_NAMES = ["1300–1600", "1600–1900", "1900–2100", "2100+"]
 
-# data/derived/lag_profiles.csv 의 tier 값 ↔ 그림 범례 이름
+# tier values in data/derived/lag_profiles.csv <-> figure legend names
 TIER_ORDER = ["1300-1600", "1600-1900", "1900-2100", "2100+"]
 TIER_DISPLAY = dict(zip(TIER_ORDER, TIER_NAMES))
 
-# ★ 논문 본문과 t+1 이 어긋난다.
-#   논문: "Values at t+1 ranged from -0.641 to -0.548 across tiers"
-#   아래: -0.617 ~ -0.564
-#   t+2 / t+3 / blunder 행은 논문과 정확히 일치하므로, t+1 열만 다른 실행에서
-#   온 것으로 보인다. run.py verify-paper 가 이 항목을 잡는다.
+# ★ t+1 disagrees with the manuscript text.
+#   Manuscript: "Values at t+1 ranged from -0.641 to -0.548 across tiers"
+#   Here:       -0.617 to -0.564
+#   The t+2, t+3 and blunder rows match the manuscript exactly, so the t+1
+#   column appears to come from a different run. run.py verify-paper
+#   reports this.
 MATERIAL_BY_TIER = {
     "status": "pending",
     "lags": [-3, -2, -1, 0, 1, 2, 3],
-    # 사건 전(t-3~t-1) 범위는 -0.026 ~ +0.023 이다. 논문 본문의
-    # "-0.057 to +0.048" 은 se_split.csv 의 blunder_only t-1 / t-3 값과
-    # 정확히 일치하므로, 세 집단 패널(Fig 1c)의 수치를 층별 문단에 잘못
-    # 옮겨 적은 것으로 보인다. 원고 쪽 확인 필요.
+    # The pre-event range (t-3 to t-1) is -0.026 to +0.023. The
+    # manuscript's "-0.057 to +0.048" matches the blunder_only t-1 and t-3
+    # values in se_split.csv exactly, so figures from the three-group panel
+    # (Fig 1c) appear to have been transcribed into the tier-wise paragraph.
+    # Needs checking against the manuscript.
     "rows": [
 
         [-0.011, -0.001, 0.014, 0.260, -0.564, -0.082, -0.107],
@@ -71,9 +73,9 @@ BLUNDER_BY_TIER = {
 }
 
 # ─────────────────────────────────────────────────────────────
-# Fig 2 (b) — 합법수 변화량 구간별 이동시간 변화
+# Fig 2 (b) - move-time change by bin of change in legal move count
 # status: pending
-# 대체: python run.py bins        → legal_bins.csv
+# Superseded by: python run.py bins        -> legal_bins.csv
 # ─────────────────────────────────────────────────────────────
 LEGAL_MOVE_BINS = {
     "status": "pending",
@@ -86,10 +88,10 @@ LEGAL_MOVE_BINS = {
 }
 
 # ─────────────────────────────────────────────────────────────
-# Fig 2 (c) — 손실 크기별 효과 (자기 손실 / 상대 손실)
+# Fig 2 (c) - effect by size of loss (own loss / opponent's loss)
 # status: pending
-# 대체: python run.py se dose     → se_dose.csv  (이미 읽고 있다)
-#       라벨은 self_N / opp_N 이다 (예전 dose_N / gain_N).
+# Superseded by: python run.py se dose     -> se_dose.csv (already read)
+#       The labels are self_N / opp_N (formerly dose_N / gain_N).
 # ─────────────────────────────────────────────────────────────
 DOSE = {
     "status": "pending",
@@ -103,9 +105,10 @@ DOSE = {
 }
 
 # ─────────────────────────────────────────────────────────────
-# Fig 2 (d)(e) — 신뢰도
-# status: pending (체스) / external (플랭커)
-# 대체: python run.py reliability  → reliability.csv, reliability_curve.csv
+# Fig 2 (d)(e) - reliability
+# status: pending (chess) / external (flanker)
+# Superseded by: python run.py reliability
+#                -> reliability.csv, reliability_curve.csv
 # ─────────────────────────────────────────────────────────────
 RELIABILITY_CHESS = {
     "status": "pending",
@@ -119,19 +122,19 @@ RELIABILITY_FLANKER = {
 }
 RELIABILITY_BY_CONDITION = {
     "status": "pending",
-    # 원고 v8 Table 2 — 층을 합친 두 행.
+    # Manuscript v8, Table 2 - two rows, tiers pooled.
     "labels": ["Blund.\nuntitled", "Mat.\nuntitled"],
     "sb": [-0.113, 0.781],
     "sigma_b": [0.284, 0.218],
 }
 
 # ─────────────────────────────────────────────────────────────
-# 플랭커 비교 (OpenNeuro ds004883)
+# Flanker comparison (OpenNeuro ds004883)
 # status: external
-# 이 저장소에는 플랭커 분석 코드가 없다. 아래 값은 별도 스크립트에서
-# 나온 것이라 status="external" 로 분리해 두었고, verify-paper 와
-# figures --check 는 이 값들을 저장소 산출물과 대조하지 않는다.
-# 논문에 인용하려면 출처(OpenNeuro ds004883)를 명시해야 한다.
+# The flanker analysis code is not in this repository. These values come
+# from a separate script, so they are held as status="external" and
+# verify-paper does not compare them against anything produced here.
+# Citing them in the paper requires naming the source (OpenNeuro ds004883).
 # ─────────────────────────────────────────────────────────────
 FLANKER = {
     "status": "external",

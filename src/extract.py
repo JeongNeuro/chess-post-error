@@ -53,43 +53,44 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from .config import *          # noqa: F403  임계값·경로·층 정의
+from .config import *          # noqa: F403  thresholds, paths, tier definitions
 from .see import see, VALUES
 
 
 # ════════════════════════════════════════════════════════════════════
-# 1. PGN movetext 파싱 + 승률 변환
-# 리체스 승률 함수:
+# 1. Parsing PGN movetext and converting to win probability
+# Lichess win-probability function:
 #     winprob(cp) = 50 + 50 * (2 / (1 + exp(-0.00368208 * cp)) - 1)
-#     → 0~100 (백 관점). 여기서는 0~1로 정규화해 사용.
+#     -> 0-100, from White's point of view. Normalised to 0-1 here.
 # 
-# 관점 정규화: 플레이어가 흑이면 cp의 부호를 뒤집은 뒤 변환한다.
-# 이것을 빠뜨리면 흑의 블런더를 전부 놓치고 백의 블런더만 잡게 된다.
+# Point of view: when the player is Black the sign of cp is flipped before
+# converting. Omitting this loses every blunder by Black and keeps only
+# White's.
 # ════════════════════════════════════════════════════════════════════
 
 K = 0.00368208
 
 CLK_RE  = re.compile(r"\[%clk\s+(\d+):(\d+):(\d+)\]")
 EVAL_RE = re.compile(r"\[%eval\s+(#?-?[\d.]+)\]")
-# 각 수 + 뒤따르는 주석 블록을 함께 잡는다
+# Capture each move together with the comment block that follows it.
 MOVE_RE = re.compile(
-    r"(?:\d+\.+\s*)?"                     # 수 번호 (선택)
+    r"(?:\d+\.+\s*)?"                     # move number (optional)
     r"((?:O-O-O|O-O|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?)"
-    r"([?!]*)"                            # NAG: 리체스가 ?/??/!/!? 를 붙여둠
-    r"\s*(\{[^}]*\})?"                    # 주석 블록
+    r"([?!]*)"                            # NAG: Lichess writes ?/??/!/!?
+    r"\s*(\{[^}]*\})?"                    # comment block
 )
 NAG_MAP = {"?!": "inaccuracy", "?": "mistake", "??": "blunder"}
 
-MATE_CP = 10000   # 메이트 스코어 클리핑
+MATE_CP = 10000   # mate scores are clipped to this
 
 
 def winprob(cp):
-    """센티폰(백 관점) → 승률 0~1 (백 관점)"""
+    """Centipawns (White's view) -> win probability 0-1 (White's view)."""
     return 1.0 / (1.0 + np.exp(-K * np.asarray(cp, dtype=float)))
 
 
 def parse_eval(tok):
-    """'#-3' 또는 '0.25' → 센티폰(백 관점) float"""
+    """'#-3' or '0.25' -> centipawns as a float, from White's view."""
     if tok.startswith("#"):
         v = tok[1:]
         sign = -1.0 if v.startswith("-") else 1.0
@@ -100,14 +101,14 @@ def parse_eval(tok):
 def parse_movetext(mt):
     """
     movetext → (clks, evals, sans, nags)
-    세 배열은 모두 플라이 인덱스 정렬. 값이 없으면 None.
-    clk는 정수 초 (리체스가 H:MM:SS로만 기록).
+    All three arrays are indexed by ply. A missing value is None.
+    clk is in whole seconds: Lichess records only H:MM:SS.
     """
     clks, evals, sans, nags = [], [], [], []
     for m in MOVE_RE.finditer(mt):
         san, nag, comment = m.group(1), m.group(2), m.group(3)
         sans.append(san)
-        nags.append(NAG_MAP.get(nag))          # 리체스 자체 분류 (교차검증용)
+        nags.append(NAG_MAP.get(nag))          # Lichess's own labels, for cross-checking
         c = e = None
         if comment:
             cm = CLK_RE.search(comment)
@@ -124,33 +125,34 @@ def parse_movetext(mt):
 
 def move_times(clks, color):
     """
-    한 플레이어의 수별 소요 시간.
-    color: 0=백(짝수 플라이 인덱스), 1=흑(홀수)
-    소요시간(i) = clk(i-2) - clk(i)   ← 같은 플레이어의 연속 clk
-    증분 0이므로 보정항 없음.
-    각 플레이어의 첫 수는 이전 clk가 없어 정의 불가 → None
-    반환: {ply_index: seconds}
+    Move times for one player.
+    color: 0 = White (even ply indices), 1 = Black (odd)
+    time(i) = clk(i-2) - clk(i), two consecutive readings for the same player.
+    The increment is zero, so no correction term is needed.
+    A player's first move has no preceding reading and is undefined -> None.
+    Returns {ply_index: seconds}
     """
     out = {}
     idxs = list(range(color, len(clks), 2))
     for j, i in enumerate(idxs):
         if j == 0:
-            continue                       # 첫 수: 정의 불가
+            continue                       # first move: undefined
         prev = idxs[j - 1]
         if clks[i] is None or clks[prev] is None:
             continue
         d = clks[prev] - clks[i]
         if d < 0:
-            continue                       # 음수: 기록 오류 (실측 0.011%)
+            continue                       # negative: recording error (0.011% observed)
         out[i] = d
     return out
 
 
 def player_winprobs(evals, color):
     """
-    플레이어 관점 승률 배열.
-    evals는 백 관점 센티폰. 흑이면 부호 반전 후 변환.
-    반환: {ply_index: winprob(0~1)}  — 해당 수를 둔 직후 국면
+    Win probabilities from the player's point of view.
+    evals are centipawns from White's view; the sign is flipped for Black
+    before converting.
+    Returns {ply_index: winprob (0-1)} for the position just after that move.
     """
     out = {}
     sign = 1.0 if color == 0 else -1.0
@@ -161,10 +163,11 @@ def player_winprobs(evals, color):
     return out
 
 # ════════════════════════════════════════════════════════════════════
-# 2. Stage 1 — 계정 메타데이터 집계 (movetext 미사용)
-# 층 배정과 표집 후보 확정. 대국 내용은 읽지 않는다.
-# 샤드 단위로 다운로드 → 집계 → 즉시 삭제. 재시작 가능.
-# 산출: {WORK}/players/sNNNNN.parquet, {WORK}/titled/mMM_sNNNNN.parquet
+# 2. Stage 1 - account metadata, without reading movetext
+# Assigns tiers and fixes the pool of candidates for sampling. Game content
+# is not parsed. Each shard is downloaded, aggregated and deleted at once, so
+# the stage can be restarted.
+# Writes: {WORK}/players/sNNNNN.parquet, {WORK}/titled/mMM_sNNNNN.parquet
 # ════════════════════════════════════════════════════════════════════
 
 def shard_url(year, month, i, n):
@@ -262,12 +265,12 @@ def scan_titled_shard(args):
     return "ok"
 
 # ════════════════════════════════════════════════════════════════════
-# 3. Stage 1b — 플레이어 집계 및 층화 표집
-# 표집 규칙 (Phase 1 확정):
-#   - 최소 30판, 전 층 동일
-#   - 층 배정은 기간 내 레이팅 중앙값
-#   - 하위 4개 층 각 500명 무작위, FM+ 전수
-#   - 1300 미만 제외, BOT 제외(Stage 1에서 이미 처리)
+# 3. Stage 1b - aggregating players and drawing the stratified sample
+# Sampling rule (fixed in Phase 1):
+#   - at least 30 games, the same in every tier
+#   - tier assigned by the player's median rating over the period
+#   - 500 drawn at random from each of the lower four tiers; FM+ taken whole
+#   - below 1300 excluded, bots excluded (already handled in Stage 1)
 # ════════════════════════════════════════════════════════════════════
 
 SEED = 20260816
@@ -277,7 +280,7 @@ _SQL_AGG = """
            max(title)                       AS title,
            sum(n_games)                     AS n_games,
            sum(n_eval_games)                AS n_eval_games,
-           -- 샤드별 중앙값의 가중평균으로 기간 중앙값 근사
+           -- approximates the period median by weighting the per-shard medians
            sum(elo_median * n_games) / sum(n_games) AS elo_median,
            min(elo_min) AS elo_min, max(elo_max) AS elo_max
     FROM read_parquet('{glob}')
@@ -286,7 +289,7 @@ _SQL_AGG = """
 
 
 def aggregate_players(players_glob=None):
-    """샤드별 집계를 플레이어 단위로 합산"""
+    """Sum the per-shard aggregates to one row per player."""
     players_glob = players_glob or f"{STAGE1}/*.parquet"
     con = duckdb.connect()
     df = con.execute(_SQL_AGG.format(glob=players_glob)).df()
@@ -295,7 +298,7 @@ def aggregate_players(players_glob=None):
 
 
 def aggregate_titled(players_glob=None):
-    """타이틀 전용 집계 (stage1_titled 산출물)"""
+    """Aggregate the titled-only output of scan-titled."""
     players_glob = players_glob or f"{STAGE1_FM}/*.parquet"
     return aggregate_players(players_glob)
 
@@ -327,12 +330,13 @@ def build_sample(df, min_games=MIN_GAMES, per_tier=PER_TIER, seed=SEED):
         n = min(per_tier, len(pool))
         out.append(pool.sample(n=n, random_state=seed))
     tpool = elig[elig.tier == TITLE_TIER]
-    out.append(tpool)                     # 타이틀 층 전수
+    out.append(tpool)                     # the titled tier is taken whole
     return df, elig, pd.concat(out, ignore_index=True)
 
 
 def build_titled_sample(df_titled, min_games=MIN_GAMES):
-    """타이틀 층 전수 표본. 층 배정은 타이틀 기준이므로 레이팅과 무관하다."""
+    """The titled tier, taken whole. Membership follows the title, not
+    rating."""
     d = df_titled.copy()
     d = d[d.title.isin(TITLES_KEEP)]
     d = d[d.n_games >= min_games]
@@ -342,10 +346,10 @@ def build_titled_sample(df_titled, min_games=MIN_GAMES):
 
 def sample_report(df, elig, samp):
     lines = []
-    lines.append(f"전체 플레이어(층 배정됨): {len(df):,}")
-    lines.append(f"≥{MIN_GAMES}판 통과:        {len(elig):,}  ({100*len(elig)/len(df):.1f}%)")
+    lines.append(f"players with a tier assigned: {len(df):,}")
+    lines.append(f"passing >={MIN_GAMES} games:      {len(elig):,}  ({100*len(elig)/len(df):.1f}%)")
     lines.append("")
-    lines.append(f"{'층':>12} {'전체':>9} {'≥30판':>8} {'통과율':>7} {'표집':>7} {'eval≥30':>8}")
+    lines.append(f"{'tier':>12} {'total':>9} {'>=30':>8} {'pass%':>7} {'drawn':>7} {'eval>=30':>8}")
     lines.append("-" * 58)
     for name in [t[0] for t in TIERS] + [TITLE_TIER]:
         a = df[df.tier == name]
@@ -355,7 +359,7 @@ def sample_report(df, elig, samp):
         rate = 100 * len(e) / len(a) if len(a) else 0
         lines.append(f"{name:>12} {len(a):>9,} {len(e):>8,} {rate:>6.1f}% {len(s):>7,} {len(ev):>8,}")
     lines.append("-" * 58)
-    lines.append(f"{'합계':>12} {len(df):>9,} {len(elig):>8,} {'':>7} {len(samp):>7,}")
+    lines.append(f"{'total':>12} {len(df):>9,} {len(elig):>8,} {'':>7} {len(samp):>7,}")
     return "\n".join(lines)
 
 
@@ -364,32 +368,33 @@ def build_all():
     df = aggregate_players()
     df, elig, samp = build_sample(df)
 
-    # 타이틀 층: 별도 집계가 있으면 그것으로 교체한다
+    # Titled tier: replace it with the separate aggregate when one exists.
     fm = None
     if os.path.isdir(STAGE1_FM) and any(
             f.endswith(".parquet") for f in os.listdir(STAGE1_FM)):
         fm = build_titled_sample(aggregate_titled())
         samp = pd.concat([samp[samp.tier != TITLE_TIER], fm], ignore_index=True)
         fm.to_parquet(SAMPLE_FM, index=False)
-        print(f"타이틀 층 {len(fm):,}명 → {SAMPLE_FM}")
+        print(f"titled tier: {len(fm):,} players -> {SAMPLE_FM}")
     else:
-        print(f"경고: {STAGE1_FM} 이 비어 있다. "
-              f"src/stage1_titled.py 를 먼저 돌려야 타이틀 층이 채워진다.")
+        print(f"warning: {STAGE1_FM} is empty. Run `run.py scan-titled` "
+              f"first or the titled tier will be missing.")
 
     print(sample_report(df, elig, samp))
     samp.to_parquet(SAMPLE, index=False)
     df.to_parquet(PLAYERS_ALL, index=False)
-    print(f"\n표본 {len(samp):,}명 → {SAMPLE}")
+    print(f"\nsample of {len(samp):,} players -> {SAMPLE}")
 
 # ════════════════════════════════════════════════════════════════════
-# 4. Stage 2 — 대국 재현 + 플라이 수준 특징
-# 산출 컬럼:
+# 4. Stage 2 - replaying games and computing per-ply features
+# Columns produced:
 #   game_id, player, color, tier, ply, move_time, clk_before, clk_after,
-#   wp_before, wp_after, wp_delta,   ← 사건 A용 (eval 있는 대국만)
-#   see_loss,                        ← 사전등록판(철회) 정의용
-#   mat_diff,                        ← 사건 B용. 수를 두기 직전,
-#                                      수를 두는 쪽 관점의 재료 차이
-#   n_legal, max_see_mine, n_checks, ← 복잡도 대리 및 예측 모형 입력
+#   wp_before, wp_after, wp_delta,   <- Event A; games with an evaluation only
+#   see_loss,                        <- the preregistered (withdrawn) definition
+#   mat_diff,                        <- Event B: the material differential
+#                                      immediately before the move, from the
+#                                      mover's point of view
+#   n_legal, max_see_mine, n_checks, <- complexity proxies and model inputs
 #   nag, is_castle, is_capture, ply_total, termination
 # ════════════════════════════════════════════════════════════════════
 
@@ -423,13 +428,13 @@ def pick_side(site):
 
 def max_opponent_capture_see(board):
     """
-    현재 국면에서 수를 둘 쪽(=상대)이 얻을 수 있는 최대 SEE.
-    > 0 이면 직전에 둔 플레이어가 재료를 순손실한 것.
+    The largest SEE available to the side to move (the opponent).
+    A value > 0 means the player who has just moved lost material on net.
 
-    최적화: 잡기 대상 칸별로 한 번만 SEE를 계산한다.
-    같은 칸을 여러 기물이 잡을 수 있어도 SEE는 내부적으로
-    가장 값싼 공격자부터 순서대로 사용하므로 결과가 같다.
-    값이 큰 표적부터 검사해 조기 종료한다.
+    SEE is computed once per target square. Several pieces may be able to
+    capture on the same square, but SEE uses the cheapest attacker first
+    internally, so the result is the same either way. Targets are examined in
+    descending order of value so the search can stop early.
     """
     me = board.turn
     targets = []
@@ -446,15 +451,15 @@ def max_opponent_capture_see(board):
         best = 0
         for v, sq in targets:
             if v <= best:
-                break                   # 남은 표적은 현재 최선을 못 넘김
+                break                   # no remaining target can beat the best so far
             for mv in board.generate_legal_moves(chess.BB_ALL, chess.BB_SQUARES[sq]):
                 if not board.is_capture(mv):
-                    continue            # 승격 등 비잡기 수 제외
+                    continue            # skip non-captures such as promotions
                 s = see(board, mv)
                 if s > best:
                     best = s
 
-    # 앙파상: 목표 칸이 비어 있어 위 표적 탐색에 잡히지 않음
+    # En passant leaves the target square empty, so the search above misses it.
     if board.ep_square is not None:
         for mv in board.generate_legal_moves(chess.BB_ALL,
                                              chess.BB_SQUARES[board.ep_square]):
@@ -476,9 +481,11 @@ def extract_game(site, white, black, wt, bt, we, be, term, mt,
         else:
             return None
 
-    # 층 배정: 표집 시 확정된 층(기간 내 레이팅 중앙값 기준)을 사용한다.
-    # 게임별 레이팅으로 매기면 레이팅이 오르내릴 때 같은 사람이 여러 층에
-    # 걸쳐 층 간 비교가 오염된다. tier_map이 없을 때만 게임별로 배정한다.
+    # Tier assignment uses the tier fixed at sampling time (the player's
+    # median rating over the period). Assigning per game would put the same
+    # player in several tiers as their rating moves, which contaminates the
+    # between-tier comparison. Per-game assignment is used only when no
+    # tier_map is available.
     if tier_map is not None:
         tier = tier_map.get(player)
     else:
@@ -497,7 +504,7 @@ def extract_game(site, white, black, wt, bt, we, be, term, mt,
     if not mtimes:
         return None
 
-    # 보드 추적: SEE + 합법수 + 복잡도 예측용 특징
+    # Board tracking: SEE, legal move count, and the complexity predictors.
     see_by_ply, legal_by_ply, cap_by_ply = {}, {}, {}
     feat_by_ply = {}
     if do_see:
@@ -510,7 +517,7 @@ def extract_game(site, white, black, wt, bt, we, be, term, mt,
             if i % 2 == color and i >= OPENING_CUT and i in mtimes:
                 legal_by_ply[i] = board.legal_moves.count()
                 cap_by_ply[i] = board.is_capture(mv)
-                # 복잡도 예측용 (강건성 검증 전용, 사전등록 외)
+                # Complexity predictors: robustness checks only, not preregistered.
                 caps = [m for m in board.legal_moves if board.is_capture(m)]
                 best_mine = 0
                 for m in caps:
@@ -554,10 +561,11 @@ def extract_game(site, white, black, wt, bt, we, be, term, mt,
 
 def sample_fens(path, n=2000, seed=0, keep_players=None, tier_map=None):
     """
-    복잡도 검증용 국면 표집.
+    Sample positions for the complexity validation.
 
-    plies 에는 FEN 을 저장하지 않으므로(용량) 여기서 다시 재현해 뽑는다.
-    반환 열: game_id, player, tier, ply, fen, n_legal, max_see_mine,
+    The plies tables do not store FENs (they would be too large), so the
+    games are replayed here to recover them.
+    Columns: game_id, player, tier, ply, fen, n_legal, max_see_mine,
              mat_diff, n_checks
     """
     rng = np.random.default_rng(seed)

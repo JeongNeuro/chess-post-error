@@ -1,4 +1,4 @@
-"""PGN 파싱·승률 변환·매칭 단위 테스트"""
+"""Unit tests for PGN parsing, win-probability conversion, and matching."""
 
 import numpy as np
 import pandas as pd
@@ -28,7 +28,7 @@ def test_move_times_use_same_player_consecutive_clocks():
     clks, _, _, _ = parse_movetext(MT)
     white = move_times(clks, 0)
     black = move_times(clks, 1)
-    assert 0 not in white           # 첫 수는 정의 불가
+    assert 0 not in white           # the first move has no preceding clock
     assert white[2] == 600 - 592    # Nf3
     assert white[4] == 592 - 580    # Bb5
     assert black[3] == 600 - 585    # Nc6
@@ -36,24 +36,24 @@ def test_move_times_use_same_player_consecutive_clocks():
 
 
 def test_move_times_drop_negative():
-    """음수 소요시간(기록 오류)은 버린다."""
+    """A negative move time is a recording error and is dropped."""
     assert move_times([100, 100, 120, 100], 0) == {}
 
 
 def test_move_times_skip_missing_clock():
-    """시계 하나가 없으면 두 수의 소요시간이 사라진다.
+    """One missing clock reading costs two move times.
 
-    clk(i) 가 없으면 그 수(diff 계산 불가)와 바로 다음 자기 수
-    (이전 clk 가 없음)가 모두 빠진다. 결측이 있는 대국에서 관측수가
-    생각보다 많이 줄어드는 이유다.
+    Without clk(i) both that move (no difference can be taken) and the
+    player's next move (no preceding reading) are lost. This is why games
+    with missing clocks lose more observations than one would expect.
     """
     assert move_times([100, 100, None, 100, 80, 100], 0) == {}
-    # 결측이 없으면 둘 다 살아난다
+    # With nothing missing, both survive.
     assert move_times([100, 100, 90, 100, 80, 100], 0) == {2: 10, 4: 10}
 
 
 def test_winprob_is_lichess_formula_normalised():
-    """docstring 의 0~100 식과 구현의 0~1 식이 같은지."""
+    """The 0-100 formula in the docstring and the 0-1 implementation agree."""
     for cp in (-500.0, -1.0, 0.0, 1.0, 500.0):
         lichess = 50 + 50 * (2 / (1 + np.exp(-K * cp)) - 1)
         assert winprob(cp) == pytest.approx(lichess / 100)
@@ -68,7 +68,7 @@ def test_mate_scores_saturate():
 
 
 def test_black_perspective_is_flipped():
-    """부호 반전을 빠뜨리면 흑의 블런더를 전부 놓친다."""
+    """Omitting the sign flip loses every blunder by Black."""
     evals = [100.0, 100.0]
     w = player_winprobs(evals, 0)
     b = player_winprobs(evals, 1)
@@ -76,7 +76,7 @@ def test_black_perspective_is_flipped():
     assert w[0] + b[0] == pytest.approx(1.0)
 
 
-# ── 매칭 ────────────────────────────────────────────────────
+# -- Matching ------------------------------------------------
 
 class Row:
     def __init__(self, **kw):
@@ -84,7 +84,8 @@ class Row:
 
 
 def test_caliper_mask_strict_drops_event_with_missing_var():
-    """★ 예전 버그: 결측 변수는 건너뛰고 나머지로 매칭했다."""
+    """★ Former bug: a missing variable was skipped and matching went ahead
+    on the rest."""
     cand = pd.DataFrame({"a": [1.0, 2.0], "b": [1.0, 1.0]})
     cal = {"a": 0.5, "b": 0.5}
     _, ok = caliper_mask(Row(a=1.0, b=np.nan), cand, cal, strict=True)
@@ -108,11 +109,12 @@ def test_window_mean_steps_by_two_plies():
 
 
 def test_cluster_se_is_larger_than_event_se():
-    """플레이어당 사건이 여럿이면 클러스터 SE 가 사건 단위보다 크다."""
+    """With several events per player, the clustered SE exceeds the
+    event-level one."""
     rng = np.random.default_rng(0)
     rows = []
     for p in range(20):
-        base = rng.normal(0, 1.0)           # 플레이어 효과
+        base = rng.normal(0, 1.0)           # player effect
         for _ in range(50):
             rows.append({"player": f"p{p}", "v": base + rng.normal(0, 0.3)})
     df = pd.DataFrame(rows)

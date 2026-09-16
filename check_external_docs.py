@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-원고 밖 문서의 수치를 원고와 대조한다.
+Check documents outside the manuscript against the manuscript.
 
   python check_external_docs.py --tex paper.tex
 
-verify-paper 는 저장소 안만 본다. cover letter, README, 프리프린트 표지처럼
-저장소 밖에 있으면서 원고 수치를 인용하는 문서는 어떤 검사에도 걸리지
-않는다. 이 스크립트가 그 틈을 메운다.
+verify-paper sees only what is inside this repository. A cover letter, a
+preprint title page or this README quotes the same figures from outside it and
+is checked by nothing. This script closes that gap.
 
-대조 대상은 파일이 아니라 **주장**이다. 제목의 이동 수, 사건 수, 플레이어
-수처럼 원고가 말하는 것을 다른 곳에서 다르게 말하고 있는지 본다.
+What it compares is not files but **claims**: the move count in the title, the
+event counts, the number of players — whether something the manuscript states
+is stated differently somewhere else.
 """
 import argparse
 import io
@@ -17,20 +18,22 @@ import os
 import re
 import sys
 
-# 원고에서 뽑을 주장과 그 정규식
+# The claims to read out of the manuscript, and the pattern that finds each.
 CLAIMS = {
-    "title_moves":   (r'Evidence From ([\d.]+) Million Moves', "제목의 이동 수"),
-    "n_material":    (r'([\d,]+)\s*\n?material-loss events', "기물 손실 사건"),
-    "n_blunder":     (r'and ([\d,]+) blunders from', "블런더 사건"),
-    "n_players":     (r'from ([\d,]+) players across five', "분석 플레이어"),
-    "n_tiers":       (r'across (five|four) rating\s*\n?tiers', "층 수"),
+    "title_moves":   (r'Evidence From ([\d.]+) Million Moves', "moves in title"),
+    "n_material":    (r'([\d,]+)\s*\n?material-loss events', "material-loss events"),
+    "n_blunder":     (r'and ([\d,]+) blunders from', "blunder events"),
+    "n_players":     (r'from ([\d,]+) players across five', "players analysed"),
+    "n_tiers":       (r'across (five|four) rating\s*\n?tiers', "rating tiers"),
 }
 
-# 원고가 버린 값. 표현이 달라도 이 숫자가 남아 있으면 낡은 문서다.
+# Values the manuscript has discarded. However a document words it, if one of
+# these numbers is still in it, the document is stale.
 #
-# 문구 기반 비교만으로는 "our study of 3.4 million moves" 처럼 달리 쓴
-# 문장을 잡지 못한다. 원고를 고칠 때 여기에 옛 값을 한 줄 더하면, 표현을
-# 어떻게 바꾸든 남아 있는 한 걸린다.
+# Comparing wording alone cannot catch a sentence like "our study of 3.4
+# million moves", which states the superseded figure in a form the manuscript
+# never uses. Adding the old value here when the manuscript changes makes it
+# catchable no matter how it is phrased.
 SUPERSEDED = {
     "title_moves": ["3.4"],
     "n_material":  ["887,287", "887287", "1.585", "1,585,000"],
@@ -38,14 +41,16 @@ SUPERSEDED = {
     "n_players":   ["2,136", "2136", "1,878", "1878"],
 }
 
-# 검사할 문서. 없으면 조용히 건너뛴다.
+# Documents to check. A missing one is skipped without comment.
 #
-# cover letter 는 원고 옆에 있으므로 현재 폴더에서 찾는다. 저장소의 README
-# 는 다르다 — 이 검사는 보통 원고 폴더에서 `--tex paper.tex` 로 돌리고,
-# 그때 "README.md" 는 저장소의 것을 가리키지 않는다. 그래서 조용히 건너뛰고,
-# 실제로 저장소 README 에 낡은 3.4 Million 이 그대로 남아 있었다.
+# The cover letters sit beside the manuscript, so they are looked up in the
+# working directory. The repository README is different: this check is normally
+# run from the manuscript's folder with `--tex paper.tex`, and "README.md" does
+# not resolve to the repository's copy there. It was skipped in silence that
+# way, and the README carried a superseded move count for as long as it was.
 #
-# 저장소 README 는 현재 폴더가 아니라 **이 스크립트의 위치**에서 찾는다.
+# So the repository README is located from **this script's own directory**,
+# not from the working directory.
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_README = os.path.join(HERE, "README.md")
 
@@ -72,9 +77,9 @@ def main():
 
     tex = read(a.tex)
     if tex is None:
-        sys.exit(f"원고를 열 수 없다: {a.tex}")
+        sys.exit(f"cannot open the manuscript: {a.tex}")
 
-    # 원고에서 주장을 뽑는다
+    # Read the claims out of the manuscript.
     truth = {}
     for key, (pat, label) in CLAIMS.items():
         m = re.search(pat, tex)
@@ -82,12 +87,12 @@ def main():
             truth[key] = (m.group(1).replace(",", ""), label)
 
     if not truth:
-        sys.exit("원고에서 주장을 하나도 뽑지 못했다. 정규식을 확인할 것.")
+        sys.exit("no claim could be read from the manuscript - check the patterns.")
 
-    print("원고가 말하는 것")
+    print("What the manuscript says")
     print("-" * 52)
     for k, (v, label) in truth.items():
-        print(f"  {label:<16} {v}")
+        print(f"  {label:<22} {v}")
 
     docs = a.docs if a.docs else DOCS
     bad = 0
@@ -101,53 +106,53 @@ def main():
         seen.add(key)
         s = read(d)
         if s is None:
-            # 저장소 README 는 늘 있어야 한다. 없다면 건너뛸 일이 아니라
-            # 검사가 제 대상을 놓치고 있다는 뜻이다.
+            # The repository README is always present. Its absence is not
+            # something to skip over: it means the check is missing its subject.
             if d == REPO_README:
                 print("")
-                print(f"✗ 저장소 README 를 열 수 없다: {d}")
+                print(f"X cannot open the repository README: {d}")
                 bad += 1
             continue
         checked += 1
         issues = []
 
-        # (1) 같은 문구를 쓰는 경우 — 값을 직접 비교한다.
+        # (1) Where the wording is shared, compare the values directly.
         for key, (pat, label) in CLAIMS.items():
             if key not in truth:
                 continue
             for m in re.finditer(pat, s):
                 got = m.group(1).replace(",", "")
                 if got != truth[key][0]:
-                    issues.append(f"{label}: {got} (원고 {truth[key][0]})")
+                    issues.append(f"{label}: {got} (manuscript says {truth[key][0]})")
 
-        # (2) 문구가 다른 경우 — 값만 보고 낡은 수치를 찾는다.
+        # (2) Where it is not, look at the values alone.
         #
-        # (1) 은 원고의 문장 형태를 그대로 요구한다. Cover letter 는 같은
-        # 사실을 "our study of 3.4 million chess moves" 처럼 달리 쓰므로
-        # 정규식이 아무것도 잡지 못하고 조용히 통과한다. 실제로 그렇게
-        # 통과하는 것을 확인했다.
+        # Pass (1) requires the manuscript's own sentence form. A cover letter
+        # states the same fact differently -- "our study of 3.4 million chess
+        # moves" -- so no pattern matches and it passes in silence. That was
+        # confirmed against a document written exactly that way.
         #
-        # 그래서 표현과 무관하게, 원고가 **버린** 값이 문서에 남아 있는지
-        # 본다. 원고에서 뽑은 현재 값과 짝이 되는 옛 값 목록이 필요하다.
+        # This pass ignores wording and asks whether a value the manuscript has
+        # **discarded** is still present, which is what SUPERSEDED holds.
         for key, (cur, label) in truth.items():
             for stale in SUPERSEDED.get(key, []):
                 if re.search(rf'(?<![\d.]){re.escape(stale)}(?![\d])', s):
                     issues.append(
-                        f"{label}: 낡은 값 {stale} 이 남아 있다 (현재 {cur})")
+                        f"{label}: superseded value {stale} is still here "
+                        f"(now {cur})")
 
-        # 원고에 없는 숫자가 주장처럼 쓰였는지
         if issues:
             bad += len(issues)
-            print(f"\n✗ {d}")
+            print(f"\nX {d}")
             for i in issues:
                 print(f"    {i}")
         else:
-            print(f"\n○ {os.path.basename(d)}")
+            print(f"\nok {os.path.basename(d)}")
 
     print("\n" + "=" * 52)
     if checked == 0:
-        sys.exit("검사한 문서가 없다. --docs 로 경로를 줄 것.")
-    print(f"{checked}개 문서 · 불일치 {bad}건")
+        sys.exit("no document was checked. Pass paths with --docs.")
+    print(f"{checked} documents - {bad} mismatches")
     if bad:
         sys.exit(1)
 
