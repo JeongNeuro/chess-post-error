@@ -10,6 +10,7 @@ evaluation drops, and moves after which material actually disappears from the
 board.
 
 - **Preregistration** — https://doi.org/10.17605/OSF.IO/VQ7XC
+- **Repository** — https://github.com/JeongNeuro/chess-post-error
 - **Manuscript** — under review at *Journal of Cognitive Psychology*
 
 ---
