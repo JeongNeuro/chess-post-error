@@ -1,0 +1,20 @@
+# Raw archives and intermediate outputs - large and regenerable
+out/
+*.pgn
+*.pgn.zst
+prepared*.parquet
+plies*.parquet
+epochs*.parquet
+/tmp/
+
+# Anonymisation mapping - must never reach a public repository
+player_mapping.json
+anon_salt.txt
+
+# Environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
