@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it using these metadata.
+title: >-
+  Analysis code for "Perceptibility of Error Outcomes Determines the
+  Direction of Post-Error Adjustment"
+abstract: >-
+  Analysis code and derived values for a study of post-error adjustment in
+  online chess. Two kinds of error are identified independently in the same
+  games - moves an engine scores as large evaluation drops, and moves after
+  which material disappears from the board - and the direction of the
+  subsequent change in decision time differs between them. The repository
+  holds the full pipeline, the derived statistics behind every reported
+  value, and a mechanical check of the manuscript's numbers against those
+  outputs.
+type: software
+authors:
+  - family-names: Jeong
+    given-names: Yunjeong
+    orcid: https://orcid.org/0009-0004-0304-4444
+    affiliation: Yonsei University
+  - family-names: Kim
+    given-names: Younggyu
+    orcid: https://orcid.org/0009-0007-6839-6477
+    affiliation: Korea University
+repository-code: https://github.com/JeongNeuro/chess-post-error
+license: MIT
+version: v1.0
+date-released: '2026-09-16'
+doi: 10.5281/zenodo.22787114
+keywords:
+  - post-error slowing
+  - error monitoring
+  - cognitive control
+  - chess
+  - naturalistic data
