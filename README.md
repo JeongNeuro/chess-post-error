@@ -1,6 +1,6 @@
 # Post-error adjustment in online chess
 
-Analysis code for *Perceptibility of Error Outcomes Determines the Direction of
+Analysis code for *Perceptibility of Error Outcomes Shapes the Direction of
 Post-Error Adjustment: Evidence From 6.7 Million Moves in Online Chess.*
 
 The study asks whether the change in decision time after an error depends on
