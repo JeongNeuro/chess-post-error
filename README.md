@@ -382,11 +382,11 @@ criterion and is retained for the supplementary comparison, reachable through
 
 ## Citation
 
-```
-Jeong, Y., & Kim, Y. (2026). Perceptibility of error outcomes determines the
+​```
+Jeong, Y., & Kim, Y. (2026). Perceptibility of error outcomes shapes the
 direction of post-error adjustment: Evidence from 6.7 million moves in online
 chess. [Preprint]
-```
+​```
 
 Game data are from the Lichess open database (https://database.lichess.org),
 released under CC0. The flanker comparison uses OpenNeuro ds004883 and is
