@@ -1,0 +1,4 @@
+task,stimuli,responses,no_response,extra_response,kept,first_after_gap,rt_out,both_rules,analysed,errors,error_rate_pct
+ffa,153759,152105,1656,2,152103,513,457,2,151135,13537,8.96
+ffb,56294,55378,916,0,55378,171,499,8,54716,9600,17.55
+ffc,68800,68349,451,0,68349,172,553,0,67624,10337,15.29

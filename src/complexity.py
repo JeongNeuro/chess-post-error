@@ -27,7 +27,7 @@ Prediction model
 #     implemented here is a reconstruction from the four features the
 #     extraction stage happens to record, so confirm that it reproduces the
 #     r = 0.47 reported in the manuscript — `run.py cx-model` prints it —
-#     before citing that figure. See docs/corrections.md.
+#     before citing that figure.
 # ───────────────────────────────────────────────────────────
 
 import json

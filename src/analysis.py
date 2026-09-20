@@ -108,21 +108,66 @@ def window_mean(zmap, gid, pl, ply, window, sign=1):
     return (float(np.mean(zs)) if zs else np.nan), len(zs)
 
 
-def control_pool(d, events, cal):
+def require_isolated(events, d):
     """
-    The control pool: rows with every matching variable observed, excluding
-    the events themselves.
+    Stop unless the events are isolated -- none of them following another
+    event. The control side of this is handled in control_pool, which sees
+    every candidate; the event side is chosen in nine different stages, and
+    the one that forgets should fail loudly rather than quietly measure the
+    effect of a run of events.
 
-    Note: this is not "moves with no event" but "moves that are not the
-    event currently being analysed". Moves belonging to a different kind of
-    event (material losses, when blunders are under analysis) or falling
-    inside another event's post-window remain candidates. This is stated in
-    the limitations section.
+    Pass through src.prepare.isolated() when selecting events.
+    """
+    from .prepare import mask_after_event
+    if not len(events):
+        return
+    # Compare on (game_id, player, ply), not on the index: callers reset it
+    # before passing events in, so index labels no longer line up with `d`.
+    # Comparing indices reported violations that were not there.
+    after = mask_after_event(d)
+    bad_keys = set(zip(d.game_id[after], d.player[after], d.ply[after]))
+    n_bad = sum((g, p, y) in bad_keys
+                for g, p, y in zip(events.game_id, events.player, events.ply))
+    if n_bad:
+        raise ValueError(
+            f"{n_bad:,} of {len(events):,} events follow another event. "
+            f"Select them through src.prepare.isolated(d, mask); see the "
+            f"window definition in docs/definitions.md.")
+
+
+def control_pool(d, events, cal, drop_events=True, drop_after=True):
+    """
+    The control pool: rows with every matching variable observed and no event
+    on them.
+
+    `events` is what the caller is analysing; drop_events removes every other
+    event as well -- blunders, and material changing hands in either
+    direction.
+
+    Excluding only the events passed in is not enough: the pool then holds
+    events of the same kind that the subsample left out, and events of other
+    kinds. Either makes a control window one in which something happened.
+    The difference is about 0.08 on the three-group effects, four to five
+    standard errors.
+
+    A move inside another event's post-window is still a candidate, and a
+    blunder in a game with no engine evaluation cannot be identified at all.
+    Both are stated in the limitations.
     """
     ev_idx = set(zip(events.game_id.values, events.ply.values))
     keep = ~np.fromiter(
         (k in ev_idx for k in zip(d.game_id.values, d.ply.values)),
         dtype=bool, count=len(d))
+    if drop_events:
+        # deferred: prepare imports us
+        from .prepare import mask_any_event, mask_after_event
+        keep &= ~mask_any_event(d).to_numpy()
+        # drop_after=False leaves in candidates whose own preceding move was
+        # an event. Only the window-definition comparison uses it; every
+        # reported analysis keeps it True, because a control window that
+        # follows an event is not a window in which nothing happened.
+        if drop_after:
+            keep &= ~mask_after_event(d).to_numpy()
     cols = [v for v in cal if v in d.columns]
     pool = d[keep]
     if cols:
@@ -177,14 +222,32 @@ EMPTY_EPOCH_COLS = ["player", "tier", "game_id", "ply", "z_post", "z_ctrl",
                     "effect", "pretrend", "at_event", "did"]
 
 
-def lagwise(d, events, cal, lags=LAGS, seed=0, max_events=None, strict=True):
+def lagwise(d, events, cal, lags=LAGS, seed=0, max_events=None, strict=True,
+            return_parts=False, exclude=None, drop_after=True,
+            require_iso=True):
     """
     Lag profile for each event.
     Returns a DataFrame with one row per event and columns lag_-6 ... lag_+3.
+
+    `exclude` is what the control pool removes, when that is not the same as
+    `events`. Subsampling makes them differ: with 41,294 events capped at
+    16,000, the other 25,294 stay in the pool and a share of the controls are
+    themselves events of the kind under analysis. Pass every event to keep
+    them out.
+
+    With return_parts, the event and control values are kept alongside their
+    difference as ev{k} and ct{k}. A rate needs both sides: reporting only
+    the difference hides whether a blunder rate of, say, +0.01 is 2% against
+    1% or 51% against 50%.
     """
     if len(events) == 0:
         return pd.DataFrame(columns=["player", "tier", "n_ctrl", "z_at"]
                             + [f"lag{k:+d}" for k in lags])
+    # require_iso=False is for tools/window_definition.py alone, which exists
+    # to measure what the requirement costs and therefore has to be able to
+    # run without it. tests/test_isolated_guard.py holds that line.
+    if require_iso:
+        require_isolated(events, d)
     rng = np.random.default_rng(seed)
     if max_events and len(events) > max_events:
         events = events.sample(max_events, random_state=seed)
@@ -194,7 +257,9 @@ def lagwise(d, events, cal, lags=LAGS, seed=0, max_events=None, strict=True):
     d = d[d.player.isin(players)]
     zmap = build_zmap(d)
 
-    pool = control_pool(d, events, cal) if cal else d
+    pool = (control_pool(d, events if exclude is None else exclude, cal,
+                         drop_after=drop_after)
+            if cal else d)
     by_player = {p: g for p, g in pool.groupby("player")}
 
     def prof(gid, pl, ply):
@@ -227,6 +292,9 @@ def lagwise(d, events, cal, lags=LAGS, seed=0, max_events=None, strict=True):
                "z_at": ze[lags.index(0)]}
         for i, k in enumerate(lags):
             row[f"lag{k:+d}"] = ze[i] - zc[i]
+            if return_parts:
+                row[f"ev{k:+d}"] = ze[i]
+                row[f"ct{k:+d}"] = zc[i]
         recs.append(row)
     return pd.DataFrame(recs)
 
@@ -283,6 +351,7 @@ def build_with_pretrend(d, events, cal, window=EPOCH_WINDOW, seed=0,
     if max_events and len(events) > max_events:
         events = events.sample(max_events, random_state=seed)
 
+    require_isolated(events, d)
     players = set(events.player.unique())
     d = d[d.player.isin(players)]
     zmap = build_zmap(d)
@@ -368,6 +437,7 @@ def build_pairs(d, events, cal, seed=0, max_events=None, strict=True,
     if max_events and len(events) > max_events:
         events = events.sample(max_events, random_state=seed)
 
+    require_isolated(events, d)
     players = set(events.player.unique())
     d = d[d.player.isin(players)]
     zmap = build_zmap(d)
@@ -521,31 +591,54 @@ def restrict_events(epochs, n, seed=0):
 
 def reliability_curve(epochs, counts=(10, 20, 30, 40, 50, 60, 80, 100,
                                       150, 200, 237, 300),
-                      seed=0, min_players=20, label=""):
+                      seed=0, min_players=20, label="", draws=50):
     """
     Split-half reliability by observation count, Spearman-Brown corrected.
 
-    Columns: label, n_events_per_player, r, sb, n_players
-    Counts leaving fewer than min_players are skipped. This is the situation
-    the manuscript describes as
-    "beyond that count fewer than 25 players met the criterion, so no stable
-    estimate could be obtained".
+    Each point is the median of `draws` subsamples, with the 2.5th and 97.5th
+    percentiles kept beside it. A single draw is noisy enough to invent
+    structure: with one draw the curve dropped from .263 at 10 events to .078
+    at 20 and recovered at 30, and the flanker data -- a different task, a
+    different sample -- dropped in the same place. Two unrelated datasets
+    failing at one point is a property of the procedure, not of either of them.
+
+    n_players is the number whose correlation was actually computed (both
+    halves reaching the minimum), not the number left after truncation. Those
+    differ, and the manuscript quotes the one the estimate rests on.
+
+    Counts leaving fewer than min_players are skipped -- the situation the
+    manuscript describes as "beyond that count fewer than 25 players met the
+    criterion, so no stable estimate could be obtained".
     """
     from .prepare import reliability
     out = []
     for n in counts:
-        sub = restrict_events(epochs, n, seed=seed)
-        n_pl = sub.player.nunique()
-        if n_pl < min_players:
+        sbs, rs, used = [], [], []
+        n_pl = 0
+        for k in range(draws):
+            sub = restrict_events(epochs, n, seed=seed + k)
+            n_pl = max(n_pl, sub.player.nunique())
+            if sub.player.nunique() < min_players:
+                continue
+            rel = reliability(sub, min_events=max(2, n // 2)) or {}
+            if not np.isnan(rel.get("sb", np.nan)):
+                sbs.append(rel["sb"])
+                rs.append(rel["r"])
+                used.append(rel.get("n_players_split", np.nan))
+        if not sbs:
             out.append({"label": label, "n_events_per_player": n,
-                        "r": np.nan, "sb": np.nan, "n_players": n_pl,
+                        "r": np.nan, "sb": np.nan, "sb_lo": np.nan,
+                        "sb_hi": np.nan, "n_players": n_pl,
+                        "n_players_used": np.nan, "draws": 0,
                         "note": f"{n_pl} players (<{min_players}) - cannot estimate"})
             continue
-        rel = reliability(sub, min_events=max(2, n // 2))
         out.append({"label": label, "n_events_per_player": n,
-                    "r": (rel or {}).get("r", np.nan),
-                    "sb": (rel or {}).get("sb", np.nan),
-                    "n_players": n_pl, "note": ""})
+                    "r": float(np.median(rs)), "sb": float(np.median(sbs)),
+                    "sb_lo": float(np.percentile(sbs, 2.5)),
+                    "sb_hi": float(np.percentile(sbs, 97.5)),
+                    "n_players": n_pl,
+                    "n_players_used": float(np.median(used)),
+                    "draws": len(sbs), "note": ""})
     return pd.DataFrame(out)
 
 

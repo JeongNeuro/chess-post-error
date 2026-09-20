@@ -24,20 +24,15 @@ pyarrow>=14,<26
 numpy>=1.24,<3
 statsmodels>=0.14        # mixed-effects model in src/analysis.py (pulls in scipy)
 
-# Tests
-pytest>=7.0
-
 # ── Optional ──────────────────────────────────────────────────
 # Stockfish is an executable, not a Python package. It is needed only
 # for the complexity validation (run.py cx). See docs/environment.md.
 
 # ── Deliberately absent ───────────────────────────────────────
 # An earlier version listed mne, scikit-learn, scipy, requests and
-# zstandard. No file in this repository imports any of the five. mne in
-# particular belongs to the flanker (EEG) comparison, whose analysis code
-# is not here — those values are held separately in
-# src/external_values.py as status="external", sourced from OpenNeuro
-# ds004883.
+# zstandard. No file in this repository imports any of the five. The
+# flanker comparison (src/flanker.py) reads the derivatives published with
+# OpenNeuro ds004883 and needs none of them either.
 #
 # matplotlib is absent too. This repository produces the statistics and
 # stops there; it does not draw the figures. Every plotted value is a row

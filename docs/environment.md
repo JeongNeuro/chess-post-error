@@ -54,7 +54,8 @@ Everything except `data/derived/` goes there.
 
 ## Runtime
 
-Roughly 1.5 hours end to end on one machine, dominated by stage 2 (~45 min).
+Roughly 1 hour 45 minutes end to end on one machine, dominated by stage 2
+(~85 min over all 397 shards of January 2024).
 The scan and extract stages are shard-parallel — the arguments are a shard
 range, so the work splits across sessions and resumes: existing outputs are
 skipped.
@@ -82,16 +83,6 @@ export CHESS_STOCKFISH=/path/to/stockfish
 
 Depth is 18 in `src/complexity.py`; `run.py cx` uses 12 by default and takes
 `--depth` (or `CX_DEPTH`). Report whichever you actually ran.
-
-## Tests
-
-```bash
-pytest
-```
-
-34 tests covering SEE, PGN parsing, the win-probability transform, `net_mat`,
-`z_pre3`, caliper matching, and clustered standard errors. They use synthetic
-positions and frames — no downloads, under a second.
 
 ## Platform
 

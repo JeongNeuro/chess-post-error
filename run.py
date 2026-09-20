@@ -12,7 +12,7 @@ Full order (approximate running times in brackets)
     scan            stage 1, account metadata over shards 0-421   (~15 min)
     scan-titled     titled accounts, 2024-01 .. 2024-06      <- slowest stage
     sample          fix the player sample -> out/ (not distributed)  (~1 min)
-    extract         stage 2, board replay and ply features        (~45 min)
+    extract         stage 2, board replay and ply features        (~85 min)
     extract-titled  the same for the titled tier                  (~20 min)
     prep            analysis table (net_mat, z, z_pre3)            (~5 min)
     se              clustered SEs -> data/derived/se_*.csv         (~10 min)
@@ -21,8 +21,6 @@ Full order (approximate running times in brackets)
     bins            effect within legal-move-count bins            (~10 min)
     describe        event descriptives                             (~2 min)
     robustness      the six registered specifications              (~30 min)
-    verify-paper    manuscript values vs data/derived/    (instant) <- run
-                                                          this before submitting
 
 Supporting stages: prelim, lag, lag-split, ps6, did, mixed,
                    cx-fens, cx, cx-model, aggregate, anonymize
@@ -43,6 +41,7 @@ import concurrent.futures as cf
 import glob
 import hashlib
 import json
+import re
 import os
 import subprocess
 import sys
@@ -54,10 +53,13 @@ import pandas as pd
 from src import config as C
 from src.analysis import lagwise, summarize, per_player_at, cluster_stats
 from src.analysis import build_with_pretrend, build_pairs, fit_mixed
-from src.extract import (download, shard_url, scan_shard, scan_titled_shard,
+from src.extract import (download, parquet_ok, shard_url, scan_shard, scan_titled_shard,
                          extract_shard, sample_fens, build_all)
-from src.prepare import (add_pre_speed, net_material_change, events_A, events_B,
-                         events_B_see, mask_A, mask_B, calipers)
+from src.prepare import (add_pre_speed, add_pre_mean, net_material_change,
+                         events_A, events_B,
+                         events_B_see, mask_A, mask_B, calipers,
+                         write_prepared, read_prepared,
+                         isolated, mask_after_event)
 
 SORT_KEY = ["player", "game_id", "ply"]
 
@@ -81,6 +83,25 @@ def _need(path, hint):
         sys.exit(f"missing file: {path}\n{hint}")
 
 
+def baseline_events(d, which, n):
+    """
+    The events the robustness baseline, the mixed model and the paired
+    difference all rest on.
+
+    The manuscript says these three are the same quantity on the same events.
+    They used to select separately -- one subsampling before the call, the
+    other leaving it to build_pairs -- and reported -0.6210 and -0.6250. The
+    gap is sampling, not definition, but nothing said so and nothing checked
+    it. One function now, one seed, one cap.
+    """
+    ev, _ = _events(d, which)
+    ev = ev.sort_values(SORT_KEY).reset_index(drop=True)
+    if n and len(ev) > n:
+        ev = (ev.sample(n, random_state=C.EVENT_SAMPLE_SEED)
+                .sort_values(SORT_KEY).reset_index(drop=True))
+    return ev
+
+
 def _calipers_from_main(with_prespeed=True, with_wp=False):
     """
     The SDs defining the calipers are taken once, over the lower four tiers,
@@ -100,11 +121,10 @@ def _calipers_from_main(with_prespeed=True, with_wp=False):
           ply                  5.958813               6.157324
 
       The published CSVs were produced on the dropna basis.
-      tests/test_prep.py fixes this ordering.
     """
     base_vars = C.MATCH_VARS_WP if with_wp else C.MATCH_VARS
     cols = list(base_vars) + ([C.PRESPEED_VAR] if with_prespeed else [])
-    base = pd.read_parquet(C.PREPARED, columns=cols)
+    base = read_prepared(C.PREPARED, columns=cols)
     if with_prespeed:
         base = base.dropna(subset=[C.PRESPEED_VAR])
     sd = {v: base[v].std() for v in base.columns}
@@ -116,11 +136,28 @@ def _calipers_from_main(with_prespeed=True, with_wp=False):
 
 
 def _events(d, which, use_see=False):
+    """
+    The events one stage analyses, under the window definition: an event
+    is used only when the player's own preceding move was not also an
+    event.
+
+    Six stages come through here -- lag, ps6, did, mixed, reliability and
+    robustness -- and none of them builds a mask of its own, so the filter
+    belongs here rather than at six call sites. Three of them were missed
+    when it was applied to the mask-building stages instead; lagwise
+    stopped them rather than letting them write CSVs under the old
+    definition.
+    """
+    after = mask_after_event(d)
+
+    def keep(ev):
+        return ev[~after.reindex(ev.index).fillna(False).to_numpy()]
+
     if which.endswith("A"):
-        return events_A(d), "blunder"
+        return keep(events_A(d)), "blunder"
     if use_see:
-        return events_B_see(d), "material_see"
-    return events_B(d), "material"
+        return keep(events_B_see(d)), "material_see"
+    return keep(events_B(d)), "material"
 
 
 def _slice(ev, a, b):
@@ -136,18 +173,31 @@ def cmd_scan(args):
     """Aggregate account metadata over shards 0-421, without parsing games."""
     C.ensure_dirs(C.STAGE1, C.WORK)
 
+    keep = getattr(args, "keep_shards", False)
+
     def work(i):
         p = f"{C.STAGE1}/s{i:05d}.parquet"
         if os.path.exists(p) and os.path.getsize(p) > 0:
             return "skip"
-        tmp = os.path.join(C.WORK, f"_a{i}.parquet")
-        if not download(shard_url(C.MAIN_YEAR, C.MAIN_MONTH, i,
-                                  C.MAIN_N_SHARDS), tmp):
+        url = shard_url(C.MAIN_YEAR, C.MAIN_MONTH, i, C.MAIN_N_SHARDS)
+        # A shard is read twice: once here for account metadata and again by
+        # `extract` to replay the games. With --keep-shards it is downloaded
+        # once and the second pass reads it from disk.
+        cached = C.shard_cache_for(url)
+        have = cached and parquet_ok(cached)
+        if have:
+            tmp, from_cache = cached, True
+        elif keep:
+            os.makedirs(C.SHARD_CACHE, exist_ok=True)
+            tmp, from_cache = cached, False
+        else:
+            tmp, from_cache = os.path.join(C.WORK, f"_a{i}.parquet"), False
+        if not have and not download(url, tmp):
             return "fail"
         try:
             scan_shard(tmp, p)
         finally:
-            if os.path.exists(tmp):
+            if not keep and not from_cache and os.path.exists(tmp):
                 os.remove(tmp)
         return "ok"
 
@@ -171,7 +221,8 @@ def cmd_scan_titled(args):
     for m in months:
         n = C.TITLED_MONTHS[m]
         end = args.end if args.end is not None else n
-        jobs = [(m, i, n) for i in range(args.start, min(end, n))
+        keep = getattr(args, "keep_shards", False)
+        jobs = [(m, i, n, keep) for i in range(args.start, min(end, n))
                 if not (m == 1 and i in C.PRELIM_SHARDS)]
         _parallel(scan_titled_shard, jobs, 5, f"scan-titled m{m:02d}")
     print("next: python run.py sample")
@@ -198,12 +249,11 @@ def _check_sample(samp):
     different sample from the paper's, and that file was in fact the one
     present in the repository. This makes that impossible to miss.
     """
-    from src.paper_check import TABLE1, N_PLAYERS
     n_fm = int((samp.tier == C.TITLE_TIER).sum())
-    want_fm = TABLE1[C.TITLE_TIER][3]
-    if len(samp) != N_PLAYERS or n_fm != want_fm:
+    want_fm = C.SAMPLE_TABLE[C.TITLE_TIER][3]
+    if len(samp) != C.SAMPLE_N_PLAYERS or n_fm != want_fm:
         print(f"  warning: sample differs from the manuscript - "
-              f"{len(samp):,} players (paper: {N_PLAYERS:,}), "
+              f"{len(samp):,} players (paper: {C.SAMPLE_N_PLAYERS:,}), "
               f"{n_fm} titled (paper: {want_fm}).", flush=True)
         if n_fm and n_fm < want_fm / 2:
             print(f"         the titled tier looks like a one-month "
@@ -215,7 +265,7 @@ def _check_sample(samp):
 
 
 def _extract_common(sample_path, out_dir, tier_filter, url_fn, jobs, label,
-                    force=False):
+                    force=False, keep_shards=False):
     _need(sample_path, "run python run.py scan and sample first.")
     C.ensure_dirs(out_dir, C.WORK)
     samp = pd.read_parquet(sample_path)
@@ -231,14 +281,25 @@ def _extract_common(sample_path, out_dir, tier_filter, url_fn, jobs, label,
             return "excl"
         if os.path.exists(out) and os.path.getsize(out) > 0:
             return "skip"
-        tmp = os.path.join(C.WORK, f"_x{tag}.parquet")
-        if not download(url, tmp):
+        # Reuse a shard kept by `scan-titled --keep-shards`. Without it
+        # the titled tier downloads the same 2,355 shards twice, once
+        # for the account scan and once to replay the games.
+        cached = C.shard_cache_for(url)
+        have = cached and parquet_ok(cached)
+        if have:
+            tmp, from_cache = cached, True
+        elif keep_shards and cached:
+            os.makedirs(C.SHARD_CACHE, exist_ok=True)
+            tmp, from_cache = cached, False
+        else:
+            tmp, from_cache = os.path.join(C.WORK, f"_x{tag}.parquet"), False
+        if not have and not download(url, tmp):
             return "fail"
         try:
             extract_shard(tmp, out, keep_players=keep, eval_only=False,
                           do_see=True, tier_map=tier_map)
         finally:
-            if os.path.exists(tmp):
+            if not keep_shards and not from_cache and os.path.exists(tmp):
                 os.remove(tmp)
         return "ok"
 
@@ -274,7 +335,8 @@ def cmd_extract_titled(args):
         jobs = [(args.month, i)
                 for i in range(args.start, min(end, C.TITLED_MONTHS[args.month]))]
     _extract_common(C.SAMPLE_FM, C.STAGE2_FM, lambda s: s, url_fn, jobs,
-                    "extract-titled", force=True)   # the FM file holds one tier
+                    "extract-titled", force=True,   # the FM file holds one tier
+                    keep_shards=getattr(args, "keep_shards", False))
 
 
 def cmd_prelim(args):
@@ -333,6 +395,18 @@ def cmd_prep(args):
     if not files:
         sys.exit(f"no plies found in {src_dir}\n"
                  f"run python run.py extract first.")
+    # The published lower-tier table was built from shards 24-231 and stopped
+    # there; shards 232-420 of the same month were never extracted.
+    # --max-shard reproduces that range. Without it every shard is used.
+    lim = getattr(args, "max_shard", None)
+    if lim is not None:
+        keep = [f for f in files
+                if re.search(r"s(\d{5})", os.path.basename(f))
+                and int(re.search(r"s(\d{5})", os.path.basename(f)).group(1)) <= lim]
+        print(f"  --max-shard {lim}: {len(keep)} of {len(files)} shards", flush=True)
+        files = keep
+        if not files:
+            sys.exit(f"no shard at or below {lim} in {src_dir}")
     print(f"reading {len(files)} shards...", flush=True)
     parts, blank = [], 0
     for f in files:
@@ -377,17 +451,13 @@ def cmd_prep(args):
     print(f"  measurement floor {C.TAU}s: {before:,} -> {len(d):,} rows "
           f"({100 * (before - len(d)) / before:.1f}% removed)", flush=True)
 
-    d["y"] = np.log(d.move_time + C.LOG_OFFSET)
-    g = d.groupby("player")["y"]
-    d["z"] = (d.y - g.transform("mean")) / g.transform("std").replace(0, np.nan)
-    d = d.dropna(subset=["z"]).reset_index(drop=True)
-
-    d = add_pre_speed(d, k=C.PRESPEED_K)
+    from src.prepare import standardise
+    d = standardise(d, C.TAU, k=C.PRESPEED_K)
     print(f"  z_pre3 missing in {d.z_pre3.isna().sum():,} rows "
           f"({100 * d.z_pre3.isna().mean():.1f}%) - undefined early in a game",
           flush=True)
 
-    d.to_parquet(out, index=False)
+    write_prepared(d, out)
     print(f"\n{'FM+' if args.fm else 'lower four tiers'}: {len(d):,} rows -> {out}  "
           f"[{time.time()-t:.0f}s]")
     print("next: python run.py se split")
@@ -398,6 +468,19 @@ def cmd_prep(args):
 # ══════════════════════════════════════════════════════════════
 
 SE_LAGS = range(-3, 4)
+
+# nextq reports the same window. lagwise computes -6..+3 whichever
+# subset is printed, so the pre-event lags cost nothing to add: they
+# were being discarded at the reporting step.
+NEXTQ_LAGS = range(-3, 4)
+OUTCOMES = ("wp_loss_x", "blunder_x", "wp_loss_q", "blunder_q")
+
+# The three flanker versions, never pooled: the dataset exists to show they
+# are not equivalent. 40-trial blocks are what the manuscript reports; 20
+# and 80 are the sensitivity either side of it.
+TASKS = ("ffa", "ffb", "ffc")
+FLANKER_BLOCKS = (40, 20, 80)
+N_FLANKER_TRIALS = 273_475
 
 
 def cmd_se(args):
@@ -414,7 +497,7 @@ def cmd_se(args):
     players.
     """
     _need(C.PREPARED, "run python run.py prep first.")
-    d = pd.read_parquet(C.PREPARED).dropna(subset=[C.PRESPEED_VAR])
+    d = read_prepared(C.PREPARED).dropna(subset=[C.PRESPEED_VAR])
 
     # The titled tier joins every mode, not just the tier breakdown.
     #
@@ -425,7 +508,7 @@ def cmd_se(args):
     #
     # --tiers four reproduces the untitled-only version for comparison.
     if args.tiers == "five" and os.path.exists(C.PREPARED_FM):
-        fm = pd.read_parquet(C.PREPARED_FM).dropna(subset=[C.PRESPEED_VAR])
+        fm = read_prepared(C.PREPARED_FM).dropna(subset=[C.PRESPEED_VAR])
         keep = [c for c in d.columns if c in fm.columns]
         d = pd.concat([d[keep], fm[keep]], ignore_index=True)
         print(f"  titled tier included: +{len(fm):,} rows "
@@ -434,7 +517,7 @@ def cmd_se(args):
         print("  lower four tiers only (--tiers four)", flush=True)
 
     cal, _ = _calipers_from_main()
-    hasA, hasB = mask_A(d), mask_B(d)
+    hasA, hasB = isolated(d, mask_A(d)), isolated(d, mask_B(d))
 
     def run(lab, ev, want_per_player=False):
         ev = ev.sort_values(SORT_KEY).reset_index(drop=True)
@@ -459,7 +542,8 @@ def cmd_se(args):
     if args.mode == "tier":
         for t in sorted(d.tier.unique()):
             dd = d[d.tier == t]
-            for tag, m in [(f"B_{t}", mask_B(dd)), (f"A_{t}", mask_A(dd))]:
+            for tag, m in [(f"B_{t}", isolated(dd, mask_B(dd))),
+                           (f"A_{t}", isolated(dd, mask_A(dd)))]:
                 r, _ = run(tag, dd[m])
                 if r:
                     rows.append(r)
@@ -477,8 +561,9 @@ def cmd_se(args):
         # The direction and size columns are written out alongside so the
         # rows can be matched to the figures.
         for v in [1, 3, 5, 9]:
-            for tag, direction, m in [(f"self_{v}", "self", d.net_mat == -v),
-                                      (f"opp_{v}", "opp", d.net_mat == v)]:
+            for tag, direction, m in [
+                    (f"self_{v}", "self", isolated(d, d.net_mat == -v)),
+                    (f"opp_{v}", "opp", isolated(d, d.net_mat == v))]:
                 r, _ = run(tag, d[m])
                 if r:
                     r["direction"], r["size"] = direction, v
@@ -663,7 +748,7 @@ def cmd_lag_split(args):
     d = _load_for_lag(is_fm, spec)
     cal, _ = _calipers_from_main(with_prespeed=not args.no_prespeed)
 
-    hasA, hasB = mask_A(d), mask_B(d)
+    hasA, hasB = isolated(d, mask_A(d)), isolated(d, mask_B(d))
     grp = {"Aonly": (hasA & ~hasB, "blunder_only"),
            "Bonly": (~hasA & hasB, "material_only"),
            "AB": (hasA & hasB, "both")}
@@ -708,7 +793,7 @@ def cmd_ps6(args):
     is_fm = args.which.startswith("fm")
     src = C.prepared_path(is_fm)
     _need(src, "run python run.py prep first.")
-    d = pd.read_parquet(src).dropna(subset=[C.PRESPEED_VAR])
+    d = read_prepared(src).dropna(subset=[C.PRESPEED_VAR])
     cal, _ = _calipers_from_main()
     ev, _et = _events(d, args.which)
     ev = _slice(ev, args.start, args.end)
@@ -741,7 +826,7 @@ def cmd_did(args):
     cols = [c for c in LAG_COLS if c != "cx_pred"]
     d = pd.read_parquet(src, columns=cols)
     if is_fm:
-        main = pd.read_parquet(C.PREPARED, columns=list(C.MATCH_VARS))
+        main = read_prepared(C.PREPARED, columns=list(C.MATCH_VARS))
         cal = calipers(main)
         del main
     else:
@@ -792,9 +877,8 @@ def cmd_mixed(args):
     is_fm = args.which.startswith("fm")
     src = C.prepared_path(is_fm)
     _need(src, "run python run.py prep first.")
-    d = pd.read_parquet(src).dropna(subset=[C.PRESPEED_VAR])
-    ev_all, _et = _events(d, args.which)
-    ev_all = ev_all.sort_values(SORT_KEY).reset_index(drop=True)
+    d = read_prepared(src).dropna(subset=[C.PRESPEED_VAR])
+    ev_all = baseline_events(d, args.which, args.max_events)
     print(f"{len(ev_all):,} events", flush=True)
 
     activity = (pd.read_parquet(C.SAMPLE)[["player", "n_games"]]
@@ -804,8 +888,10 @@ def cmd_mixed(args):
 
     def one(tag, frame, events, cal, fit_model=True, with_wp=False):
         t = time.time()
+        # already capped by baseline_events; a second draw here would
+        # give the robustness baseline and this one different events
         long_df = build_pairs(frame, events, cal, seed=C.EVENT_SAMPLE_SEED,
-                              max_events=args.max_events)
+                              max_events=None)
         n_pairs = len(long_df) // 2
         if n_pairs == 0:
             print(f"  skipping {tag}: no pairs", flush=True)
@@ -972,9 +1058,10 @@ def cmd_aggregate(args):
     data/derived/.
 
     event_type in lag_profiles.csv distinguishes material from material_see.
-    An earlier version wrote both as material, which made results under the
-    withdrawn SEE definition look like results under the paper's definition
-    (-0.205 at t+1, against the paper's -0.587).
+    The two are far apart -- on the untitled tiers under the legal-move-count
+    specification, -0.214 at t+1 under the withdrawn SEE rule against -0.593
+    under net loss -- so writing both as material would pass one off as the
+    other.
     """
     C.ensure_dirs(C.DERIVED)
     jobs = [(f"{C.WORK}/lag_*.parquet", "lag_profiles.csv"),
@@ -1060,10 +1147,8 @@ def cmd_anonymize(args):
 # ══════════════════════════════════════════════════════════════
 # The remaining analyses the manuscript reports
 # ══════════════════════════════════════════════════════════════
-# The five stages below did not exist in the original repository. The paper
-# reported their results with no code that produced them, so those numbers
-# survived only as transcriptions in a reference table. That table is now
-# src/external_values.py. See docs/corrections.md.
+# The five stages below produce the supporting analyses the manuscript
+# reports alongside the main effects.
 
 
 def _events_with_effect(d, cal, ev, seed=None):
@@ -1125,7 +1210,7 @@ def cmd_reliability(args):
         if not os.path.exists(src):
             print(f"skipping {tier_label}: {src} is absent")
             continue
-        d = pd.read_parquet(src).dropna(subset=[C.PRESPEED_VAR])
+        d = read_prepared(src).dropna(subset=[C.PRESPEED_VAR])
         cal, _ = _calipers_from_main()
         for ev_label, which in [("Material loss", "B"), ("Blunder", "A")]:
             ev, _et = _events(d, which)
@@ -1166,7 +1251,13 @@ def cmd_reliability(args):
                 "r_halves": rel.get("r", np.nan),
                 "sigma_b": rel.get("sigma_b", np.nan),
                 "sigma_w": rel.get("sigma_w", np.nan),
+                # The Table 2 caption says "median"; this was the mean,
+                # and config said "median about 149". Three different
+                # things. Both are written out now and the caption is
+                # matched to whichever it quotes.
                 "events_per_player": float(per.mean()) if len(per) else np.nan,
+                "events_per_player_median": (float(per.median())
+                                            if len(per) else np.nan),
                 "n_players": int(e.player.nunique()),
                 "n_events": int(len(e)),
             })
@@ -1181,6 +1272,7 @@ def cmd_reliability(args):
         t2.to_csv(path, index=False)
         print(f"\n→ {path}")
         print(t2[["label", "reliability", "sigma_b", "events_per_player",
+                  "events_per_player_median",
                   "n_players"]].to_string(index=False))
     if curves:
         cv = pd.concat(curves, ignore_index=True)
@@ -1210,20 +1302,31 @@ def cmd_bins(args):
     from src.prepare import net_legal_change
 
     _need(C.PREPARED, "run python run.py prep first.")
-    d = pd.read_parquet(C.PREPARED).dropna(subset=[C.PRESPEED_VAR])
+    d = read_prepared(C.PREPARED).dropna(subset=[C.PRESPEED_VAR])
     d = net_legal_change(d)
     cal, _ = _calipers_from_main()
 
     bins = [-np.inf, -12, -8, -4, -1, 1, 4, 8, np.inf]
     sz = getattr(args, "size", None)
     if sz:
-        masks = [("self_lost", d.net_mat == -sz), ("opp_lost", d.net_mat == sz)]
+        masks = [("self_lost", isolated(d, d.net_mat == -sz)),
+                 ("opp_lost", isolated(d, d.net_mat == sz))]
         print(f"  {sz}-point losses only", flush=True)
     else:
-        masks = [("self_lost", d.net_mat < 0), ("opp_lost", d.net_mat > 0)]
-    out = []
+        masks = [("self_lost", isolated(d, d.net_mat < 0)),
+                 ("opp_lost", isolated(d, d.net_mat > 0))]
+    out, change_rows = [], []
     for label, m in masks:
         ev = d[m].sort_values(SORT_KEY).reset_index(drop=True)
+        # Mean change in legal moves by material value, on every event.
+        # It needs no matching, so it is taken before the subsample below;
+        # computed after it (as up to v1.0) the value depended on which
+        # 16,000 events were drawn and did not reproduce the population.
+        for v, g in ev.groupby(ev.net_mat.abs())["net_legal"]:
+            if v in (1, 3, 5, 9):
+                change_rows.append({"label": label, "size": int(v),
+                                    "mean_net_legal": float(g.mean()),
+                                    "n_events": int(g.notna().sum())})
         if len(ev) > args.max_events:
             ev = ev.sample(args.max_events, random_state=C.EVENT_SAMPLE_SEED)
             ev = ev.sort_values(SORT_KEY).reset_index(drop=True)
@@ -1245,11 +1348,6 @@ def cmd_bins(args):
         e["net_legal"] = ev["net_legal"].values
         out.append(bin_effects(e, "net_legal", bins, label=label))
 
-        mean_change = ev.groupby(ev.net_mat.abs())["net_legal"].mean()
-        for v in (1, 3, 5, 9):
-            if v in mean_change.index:
-                print(f"     mean change in legal moves after a {v}-point loss: "
-                      f"{mean_change.loc[v]:+.2f}")
 
     if not out:
         sys.exit("no bins produced - not enough events.")
@@ -1259,6 +1357,11 @@ def cmd_bins(args):
                         "legal_bins_queen.csv" if sz else "legal_bins.csv")
     res.to_csv(path, index=False)
     print(f"\n→ {path}")
+    if not sz and change_rows:
+        cpath = os.path.join(C.DERIVED, "legal_change.csv")
+        pd.DataFrame(change_rows).to_csv(cpath, index=False)
+        print(f"→ {cpath}")
+        print(pd.DataFrame(change_rows).to_string(index=False))
     print(res[["label", "bin", "effect", "se", "n_events"]].to_string(index=False))
 
 
@@ -1275,17 +1378,33 @@ def cmd_describe(args):
     Writes: data/derived/event_characteristics.csv
     """
     _need(C.PREPARED, "run python run.py prep first.")
-    d = pd.read_parquet(C.PREPARED).dropna(subset=[C.PRESPEED_VAR])
-    hasA, hasB = mask_A(d), mask_B(d)
+    d = read_prepared(C.PREPARED).dropna(subset=[C.PRESPEED_VAR])
+    hasA, hasB = isolated(d, mask_A(d)), isolated(d, mask_B(d))
     groups = {"blunder_only": hasA & ~hasB,
               "blunder_loss": hasA & hasB,
               "loss_only": hasB & ~hasA}
 
     # Is the player's next move a blunder?
+    #
+    # mask_A, not the isolated events: whether a later move is a blunder
+    # has nothing to do with which events this stage analyses. hasA is
+    # isolated(mask_A), and a move two plies after an event can never be
+    # isolated -- it follows one by construction -- so every rate came
+    # out as exactly 0.0000.
+    # NaN where the move carries no engine evaluation or sits outside the
+    # 10-90% band, matching blunder_q in run.py nextq. Scoring those as 0
+    # puts 3.05M moves in the denominator against nextq's 686k evaluated
+    # in-band ones, and the two rates then describe different quantities
+    # while looking comparable.
+    from src.prepare import next_quality_columns
+    _q = next_quality_columns(d)["blunder_q"]
     nxt_blunder = pd.Series(
-        dict(zip(zip(d.game_id, d.player, d.ply), hasA.values)))
+        dict(zip(zip(d.game_id, d.player, d.ply), _q.values)))
     key_next = list(zip(d.game_id, d.player, d.ply + 2))
-    d = d.assign(next_is_blunder=[nxt_blunder.get(k, np.nan) for k in key_next])
+    # Cast to float. An object column holding np.bool_ alongside NaN sums with
+    # `or` rather than by addition, so mean() returns 1/n for every group --
+    # which is what every value in v1.0's event_characteristics.csv was.
+    d = d.assign(next_is_blunder=next_flags(nxt_blunder, key_next))
 
     rows = []
     for name, m in groups.items():
@@ -1320,6 +1439,11 @@ def cmd_describe(args):
           "engine evaluation. Read it beside the base rate (all moves).")
 
 
+def next_flags(lookup, keys):
+    """Next-move blunder flags as float (1.0, 0.0, NaN)."""
+    return np.array([lookup.get(k, np.nan) for k in keys], dtype=float)
+
+
 def cmd_robustness(args):
     """
     Rerun the six preregistered specifications at alternative levels -
@@ -1335,30 +1459,20 @@ def cmd_robustness(args):
     Writes: data/derived/robustness.csv
     """
     _need(C.PREPARED, "run python run.py prep first.")
-    base = pd.read_parquet(C.PREPARED)
+    base = read_prepared(C.PREPARED)
 
     def effect_at_t1(d, cal, which, n=None):
         d = d.dropna(subset=[C.PRESPEED_VAR])
-        ev, _ = _events(d, which)
-        ev = ev.sort_values(SORT_KEY).reset_index(drop=True)
-        n = n or args.max_events
-        if len(ev) > n:
-            ev = ev.sample(n, random_state=C.EVENT_SAMPLE_SEED)
-            ev = ev.sort_values(SORT_KEY).reset_index(drop=True)
+        ev = baseline_events(d, which, n or args.max_events)
         if len(ev) < C.MIN_EVENTS:
             return None
         prof = lagwise(d, ev, cal, seed=C.MATCH_SEED)
         return cluster_stats(prof[["player", "lag+1"]].dropna(), "lag+1")
 
     def restandardise(d, tau):
-        """Changing the measurement floor requires recomputing z."""
-        from src.prepare import add_pre_speed
-        x = d[d.move_time >= tau].copy()
-        x["y"] = np.log(x.move_time + C.LOG_OFFSET)
-        g = x.groupby("player")["y"]
-        x["z"] = (x.y - g.transform("mean")) / g.transform("std").replace(0, np.nan)
-        x = x.dropna(subset=["z"]).reset_index(drop=True)
-        return add_pre_speed(x, k=C.PRESPEED_K)
+        """The shared preprocessing; see src.prepare.standardise."""
+        from src.prepare import standardise
+        return standardise(d, tau, k=C.PRESPEED_K)
 
     rows = []
 
@@ -1372,9 +1486,12 @@ def cmd_robustness(args):
         print(f"  {spec:<18}{str(level):<8}{which:<4}"
               f"{st['effect']:+.4f} ± {st['se']:.4f}", flush=True)
 
+    # z is restandardised here as it is for the measurement floor. Both
+    # specifications drop moves, so both change the within-player mean
+    # and SD that z is defined against; only the floor series did it.
     print("opening cut")
     for cut in C.SENS_OPENING_CUT:
-        d = base[base.ply >= cut]
+        d = restandardise(base[base.ply >= cut], C.TAU)
         cal, _ = _calipers_from_main()
         record("opening_cut", cut, "B", effect_at_t1(d, cal, "B"))
 
@@ -1388,7 +1505,8 @@ def cmd_robustness(args):
     d = base.dropna(subset=[C.PRESPEED_VAR])
     cal, _ = _calipers_from_main()
     for th in C.GRID_BLUNDER_THRESH:
-        ev = events_A(d, thresh=th).sort_values(SORT_KEY).reset_index(drop=True)
+        ev = d[isolated(d, mask_A(d, thresh=th))]
+        ev = ev.sort_values(SORT_KEY).reset_index(drop=True)
         if len(ev) > args.max_events:
             ev = ev.sample(args.max_events, random_state=C.EVENT_SAMPLE_SEED)
             ev = ev.sort_values(SORT_KEY).reset_index(drop=True)
@@ -1429,17 +1547,276 @@ def cmd_robustness(args):
           "run.py lag <B> <none|nlegal|nlegal_cx|zpre> and run.py did.")
 
 
-def cmd_verify_paper(args):
+def cmd_flanker(args):
     """
-    Compare the values printed in the manuscript against data/derived/.
+    The flanker comparison: effects, reliability, and the exclusion counts.
 
-    The transcription lives in src/paper_check.py. When the manuscript
-    changes, change it there too. A mismatch is labelled DATA (the repository
-    needs regenerating) or PAPER (check what the manuscript says).
+    Reads the OpenNeuro ds004883 derivatives, which are not redistributed with
+    this repository. Set CHESS_FLANKER to the folder holding trials_v2.csv,
+    exclusions.csv and raw/; see the README for how to build it.
+
+    The three task versions are analysed separately and never pooled. They
+    differ in length and in error rate -- 9% to 18% -- and the dataset exists
+    precisely to show they are not equivalent.
+
+    Writes: data/derived/flanker.csv
+            data/derived/flanker_reliability.csv
+            data/derived/flanker_by_version.csv
     """
-    from src.paper_check import run as verify
-    rep = verify()
-    sys.exit(1 if rep.bad else 0)
+    from src.flanker import (prepare, events_and_controls, match, reliability,
+                             audit)
+    root = args.path or C.FLANKER
+    if not root:
+        sys.exit("set CHESS_FLANKER, or pass the path: "
+                 "run.py flanker <folder>")
+    trials = os.path.join(root, "trials_v2.csv")
+    _need(trials, "see the README for how to obtain ds004883.")
+
+    t = pd.read_csv(trials, dtype={"participant": str})
+    d = prepare(t)
+    ev, ct = events_and_controls(d)
+    print(f"trials reconstructed      {len(t):,}", flush=True)
+    print(f"after both filters        {len(d):,}", flush=True)
+    print(f"isolated errors (events)  {len(ev):,}", flush=True)
+    print(f"clean controls            {len(ct):,}", flush=True)
+
+    C.ensure_dirs(C.DERIVED)
+
+    # ── effects ────────────────────────────────────────────────────────────
+    rows = []
+    for task in TASKS:
+        e, c = ev[ev.task == task], ct[ct.task == task]
+        m = match(e, c, seed=0)
+        share = len(m) / len(e) if len(e) else np.nan
+        rt = cluster_stats(m[["participant", "d_rt"]].dropna().rename(
+            columns={"participant": "player"}), "d_rt")
+        er = cluster_stats(m[["participant", "d_err"]].dropna().rename(
+            columns={"participant": "player"}), "d_err")
+        rows.append({
+            "task": task, "n_events": len(e), "n_matched": len(m),
+            "matched_share": share,
+            "n_participants": m.participant.nunique() if len(m) else 0,
+            "ctrl_per_event": m.n_ctrl.mean() if len(m) else np.nan,
+            "rt_effect": rt["effect"], "rt_se": rt["se"], "rt_t": rt["t"],
+            "err_effect": er["effect"], "err_se": er["se"], "err_t": er["t"],
+            "ev_err_rate": m.ev_err.mean() if len(m) else np.nan,
+            "ct_err_rate": m.ct_err.mean() if len(m) else np.nan})
+        print("  %s  matched %5s/%5s (%.2f)  participants %3d"
+              % (task, f"{len(m):,}", f"{len(e):,}", share,
+                 rows[-1]["n_participants"]), flush=True)
+    eff = pd.DataFrame(rows)
+    eff.to_csv(os.path.join(C.DERIVED, "flanker.csv"), index=False)
+
+    # ── reliability, at the reported block size and two others ─────────────
+    rel = []
+    for task in TASKS:
+        e, c = ev[ev.task == task], ct[ct.task == task]
+        m = match(e, c, seed=0)
+        for block in FLANKER_BLOCKS:
+            r = reliability(m, block=block)
+            r["task"] = task
+            rel.append(r)
+            print("  %s block %-3d done" % (task, block), flush=True)
+    pd.concat(rel, ignore_index=True).to_csv(
+        os.path.join(C.DERIVED, "flanker_reliability.csv"), index=False)
+
+    # ── exclusion accounting ───────────────────────────────────────────────
+    per = audit(root)
+    per.to_csv(os.path.join(C.DERIVED, "flanker_by_version.csv"))
+    print()
+    print(per.to_string())
+    total = int(per.analysed.sum())
+    if total != N_FLANKER_TRIALS:
+        sys.exit(f"analysed rows sum to {total:,}, not {N_FLANKER_TRIALS:,}. "
+                 f"The per-version column is what the appendix prints, so it "
+                 f"has to agree with the total the Method states.")
+    print()
+    print(f"analysed rows sum to {total:,}  OK")
+
+
+def cmd_nextq(args):
+    """
+    Quality of the player's next moves after an event.
+
+    Outcomes, each a property of the move it sits on:
+        blunder_q   1/0 under the Event A rule; NaN outside the 10-90% band
+        wp_loss_q   -wp_delta, the win probability given up on that move
+
+    lagwise reads them at ply + 2k, so lag 1 is the player's next move.
+
+    Matching is the five-variable main specification, unchanged. Win
+    probability stays out of it for the reason it stays out everywhere else:
+    an engine evaluation exists only for games a player submitted for
+    analysis, 12.4% to 28.4% of untitled games, and matching on it would make
+    the comparison a differently self-selected subsample in each tier.
+
+    Position strength is handled in the outcome instead, by expected_quality,
+    which is where the win probability of the measured move enters.
+
+    An earlier version matched on win probability at the move being measured,
+    which is a post-event quantity --
+    the event is what changed it. Requiring a control to arrive at a similar
+    place selects controls that suffered something similar, so the comparison
+    became event against event. It showed: the matched share fell to 7.6% and
+    the control blunder rate reached 0.333 against a base rate of 0.129.
+
+    Position difficulty is removed from the outcome instead, by expected_quality.
+
+    All events of either kind are kept out of the control pool, not just the
+    subsample that is analysed.
+
+    Writes: data/derived/next_quality_<mode>.csv
+    """
+    from src.analysis import lagwise, cluster_stats
+    from src.prepare import (next_quality_columns, expected_quality,
+                             mask_A, mask_B)
+
+    _need(C.PREPARED, "run python run.py prep first.")
+    d = read_prepared(C.PREPARED).dropna(subset=[C.PRESPEED_VAR])
+    if args.tiers == "five" and os.path.exists(C.PREPARED_FM):
+        fm = read_prepared(C.PREPARED_FM).dropna(subset=[C.PRESPEED_VAR])
+        keep = [c for c in d.columns if c in fm.columns]
+        d = pd.concat([d[keep], fm[keep]], ignore_index=True)
+        print(f"  titled tier included: +{len(fm):,} rows", flush=True)
+    else:
+        print("  lower four tiers only", flush=True)
+    d = next_quality_columns(d)
+
+    d = expected_quality(d)
+    cells = int(d["_cell_n"].notna().sum())
+    small = float((d["_cell_n"] < 30).mean())
+    print(f"  expected-loss cells: {d.groupby(['wp_loss_exp']).ngroups:,} distinct "
+          f"means; {100 * small:.1f}% of moves sit in a cell under 30", flush=True)
+
+    # The same calipers as every other stage.
+    base_cal, _ = _calipers_from_main()
+    for v, c in base_cal.items():
+        print(f"    caliper {v:<16} {c:.6f}", flush=True)
+
+    # --qpre: the regression control. An event is a bad move by definition,
+    # so if move quality drifts within a player the event is drawn from a
+    # temporary trough and the next move returns towards that player's usual
+    # level with no adjustment at all. Matching already holds the preceding
+    # three moves' *speed*; this holds their *quality* as well, in the same
+    # way and at the same caliper.
+    #
+    # Each outcome gets the mean of its own preceding three moves. Using one
+    # outcome's history to control another's regression would not control it:
+    # the two correlate but are not the same quantity, and blunder_q is
+    # defined only on win probability 10-90%, so it is missing on different
+    # rows than wp_loss_q.
+    if args.qpre:
+        for oc in OUTCOMES:
+            d = add_pre_mean(d, oc, k=C.PRESPEED_K, col=f"{oc}_pre3")
+
+    ev_ok = d.wp_before.notna() & d.wp_delta.notna()
+    hasA = isolated(d, mask_A(d) & ev_ok)
+    hasB = isolated(d, mask_B(d) & ev_ok)
+
+    if args.mode == "split":
+        groups = [("blunder_only", hasA & ~hasB),
+                  ("blunder_loss", hasA & hasB),
+                  ("loss_only", hasB & ~hasA)]
+    elif args.mode == "dose":
+        groups = []
+        for v in (1, 3, 5, 9):
+            groups += [
+                (f"self_{v}", isolated(d, ev_ok & (d.net_mat == -v))),
+                (f"opp_{v}", isolated(d, ev_ok & (d.net_mat == v)))]
+    else:
+        groups = []
+        for t in sorted(d.tier.unique()):
+            tt = d.tier == t
+            groups += [(f"A_{t}", hasA & tt), (f"B_{t}", hasB & tt)]
+
+    exclude = d[hasA | hasB]
+    print(f"  control pool excludes all {len(exclude):,} events of either kind",
+          flush=True)
+
+    rows = []
+    for outcome in OUTCOMES:
+        dq = d.assign(z=d[outcome].astype(float))
+        cal = dict(base_cal)
+        if args.qpre:
+            # Aliased to one name so caliper_mask finds it whichever outcome
+            # is being measured; the SD is that outcome's own.
+            #
+            # The SD is taken over the lower four tiers, which is the basis
+            # every other caliper in this pipeline uses -- see
+            # _calipers_from_main. Taking it over all five would widen this
+            # one caliper alone and make it incomparable with the rest.
+            dq = dq.assign(q_pre3=d[f"{outcome}_pre3"].astype(float))
+            sd = float(dq.loc[dq.tier != C.TITLE_TIER, "q_pre3"].std())
+            cal["q_pre3"] = args.qpre_sd * sd
+            have = int(dq.q_pre3.notna().sum())
+            scored = int(dq[outcome].notna().sum())
+            both = int((dq.q_pre3.notna() & dq[outcome].notna()).sum())
+            print(f"  {outcome}: scored on {scored:,} moves; q_pre3 defined "
+                  f"on {have:,}; both on {both:,} "
+                  f"({100 * both / max(scored, 1):.1f}% of scored)"
+                  f"  caliper {cal['q_pre3']:.6f}", flush=True)
+        for lab, m in groups:
+            ev_all = dq[m]
+            if len(ev_all) == 0:
+                print(f"  skipping {outcome}/{lab}: no events", flush=True)
+                continue
+
+            # Descriptives over every event, before any subsampling: the same
+            # reason the legal-move change moved above the sample.
+            nxt = ev_all[["game_id", "player", "ply"]].copy()
+            nxt["_k"] = nxt.ply + 2
+            nxt = nxt.merge(
+                dq[["game_id", "player", "ply", outcome]].rename(
+                    columns={"ply": "_k", outcome: "_o"}),
+                on=["game_id", "player", "_k"], how="left")
+            cover = float(nxt["_o"].notna().mean())
+            raw = float(nxt["_o"].astype(float).mean())
+
+            ev = ev_all.sort_values(SORT_KEY).reset_index(drop=True)
+            if len(ev) > C.MAX_EVENTS_SE:
+                ev = (ev.sample(C.MAX_EVENTS_SE, random_state=C.EVENT_SAMPLE_SEED)
+                        .sort_values(SORT_KEY).reset_index(drop=True))
+            if len(ev) < C.MIN_EVENTS:
+                print(f"  skipping {outcome}/{lab}: only {len(ev)} events", flush=True)
+                continue
+            print(f"  {outcome} / {lab}: {len(ev):,} events "
+                  f"(of {len(ev_all):,})...", flush=True)
+            p = lagwise(dq, ev, cal, seed=C.MATCH_SEED, return_parts=True,
+                        exclude=exclude)
+            matched = float((p.n_ctrl > 0).mean()) if len(p) else float("nan")
+            for k in NEXTQ_LAGS:
+                col = f"lag{k:+d}"
+                st = cluster_stats(p[["player", col]].dropna(), col)
+                if st is None:
+                    continue
+                both = p[[f"ev{k:+d}", f"ct{k:+d}"]].dropna()
+                rows.append({
+                    "outcome": outcome, "label": lab, "lag": k,
+                    "effect": st["effect"], "se": st["se"], "t": st["t"],
+                    "effect_pw": st["effect_pw"],
+                    "n_events": st["n_events"], "n_players": st["n_players"],
+                    "event_mean": float(both.iloc[:, 0].mean()) if len(both) else np.nan,
+                    "control_mean": float(both.iloc[:, 1].mean()) if len(both) else np.nan,
+                    "coverage_all": cover if k == 1 else np.nan,
+                    "raw_rate_all": raw if k == 1 else np.nan,
+                    "n_events_all": len(ev_all),
+                    "matched_share": matched,
+                    "usable_share": st["n_events"] / len(ev),
+                })
+
+    if not rows:
+        sys.exit("nothing produced - too few events.")
+    out = pd.DataFrame(rows)
+    C.ensure_dirs(C.DERIVED)
+    suffix = "_qpre" if args.qpre else ""
+    path = os.path.join(C.DERIVED,
+                        f"next_quality_{args.mode}{suffix}.csv")
+    out.to_csv(path, index=False)
+    print(f"\n-> {path}")
+    show = out[out.lag == 1][["outcome", "label", "event_mean", "control_mean",
+                              "effect", "se", "t", "coverage_all",
+                              "matched_share"]]
+    print(show.to_string(index=False))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1461,9 +1838,14 @@ def build_parser():
     s = add("scan", cmd_scan, "stage 1 - account metadata")
     s.add_argument("start", nargs="?", type=int, default=0)
     s.add_argument("end", nargs="?", type=int, default=C.MAIN_N_SHARDS)
+    s.add_argument("--keep-shards", action="store_true", dest="keep_shards",
+                   help="keep each downloaded shard so the next stage reads it from disk instead of downloading it again")
 
     s = add("scan-titled", cmd_scan_titled,
             "stage 1, titled accounts (all six months if omitted)")
+    s.add_argument("--keep-shards", action="store_true", dest="keep_shards",
+                   help="keep each downloaded shard so extract-titled can "
+                        "reuse it (~400 GB; halves the titled tier's time)")
     s.add_argument("month", nargs="?", type=int, default=None,
                    choices=sorted(C.TITLED_MONTHS))
     s.add_argument("start", nargs="?", type=int, default=0)
@@ -1474,6 +1856,8 @@ def build_parser():
     s = add("extract", cmd_extract, "stage 2 - board replay (slowest stage)")
     s.add_argument("start", nargs="?", type=int, default=0)
     s.add_argument("end", nargs="?", type=int, default=C.MAIN_N_SHARDS)
+    s.add_argument("--keep-shards", action="store_true", dest="keep_shards",
+                   help="keep each downloaded shard so the next stage reads it from disk instead of downloading it again")
     s.add_argument("--force", action="store_true",
                    help="proceed even when the sample differs from the paper")
 
@@ -1489,6 +1873,9 @@ def build_parser():
     s = add("prep", cmd_prep, "analysis table (net_mat, z, z_pre3)")
     s.add_argument("fm", nargs="?", default=False,
                    type=lambda v: str(v).lower().startswith("fm"))
+    s.add_argument("--max-shard", type=int, default=None,
+                   help="use only shards with index <= this "
+                        "(231 reproduces the published lower-tier table)")
 
     s = add("se", cmd_se, "clustered SEs -> data/derived/se_*.csv")
     s.add_argument("--tiers", choices=["five", "four"], default="five",
@@ -1567,7 +1954,27 @@ def build_parser():
     s.add_argument("--max-events", type=int, default=C.MAX_EVENTS_SE,
                    dest="max_events")
 
-    add("verify-paper", cmd_verify_paper, "manuscript values vs data/derived/")
+    s = add("flanker", cmd_flanker, "the flanker comparison (ds004883)")
+    s.add_argument("path", nargs="?", default=None,
+                   help="folder holding trials_v2.csv, exclusions.csv "
+                        "and raw/ (default: $CHESS_FLANKER)")
+
+    s = add("nextq", cmd_nextq, "quality of the moves following an event")
+    s.add_argument("--mode", choices=["split", "dose", "tier"], default="split")
+    s.add_argument("--qpre", action="store_true",
+                   help="also match on the mean of the outcome over the "
+                        "player's preceding three moves, at the same "
+                        "caliper as pre-event speed (regression control)")
+    s.add_argument("--qpre-sd", type=float, default=C.PRESPEED_CALIPER_SD,
+                   dest="qpre_sd",
+                   help="caliper for that control, in SD (default 0.6). A "
+                        "large value leaves the sample restriction in place "
+                        "but stops the caliper binding, which separates the "
+                        "two")
+    s.add_argument("--tiers", choices=["five", "four"], default="five",
+                   help="five: include the titled tier (default); "
+                        "four: lower four tiers only")
+
 
     return p
 

@@ -1,5 +1,5 @@
 spec,coefficient,se,convergence,n_obs,n_players
-paired difference (main),-0.5134264360419503,0.014551216384033748,n/a,16391,1724
-mixed model (main),-0.5134264360419507,0.008011511785220008,random intercept (fallback 1),32782,1724
-"paired difference (with wp, engine-eval subset)",-0.592635528728988,0.020572936024331603,n/a,8757,1402
-"mixed model (with wp, engine-eval subset)",-0.5962990386199157,0.013801335611587869,random slope,17514,1402
+paired difference (main),-0.6307712945564496,0.014103837792674354,n/a,15741,1771
+mixed model (main),-0.6307712945564504,0.007971932322896329,random intercept (fallback 1),31482,1771
+"paired difference (with wp, engine-eval subset)",-0.5927040159808171,0.04146895843947015,n/a,1044,587
+"mixed model (with wp, engine-eval subset)",-0.592704015980817,0.029520218700797088,random intercept (fallback 1),2088,587

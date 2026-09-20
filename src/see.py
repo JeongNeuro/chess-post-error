@@ -21,8 +21,7 @@ indirect effects.
 #     for the supplementary comparison.
 #   - Why this criterion fails to exclude even exchanges: docs/definitions.md.
 #   - Two properties to confirm: the king is considered LAST as a recapturer,
-#     never first, and it cannot recapture into a defended square. Both were
-#     wrong originally; tests/test_see.py holds the position that exposed it.
+#     never first, and it cannot recapture into a defended square.
 # ───────────────────────────────────────────────────────────
 
 import chess
@@ -42,8 +41,9 @@ VALUES = {
 # pawn, producing an exchange sequence in which
 #   (1) the king recaptures even when a pawn could, and
 #   (2) that king is then captured as a zero-value piece.
-# In `3r3k/8/8/3P4/4K3/8/b7/8 b - -`, Rxd5 should be +1 and came out as -4.
-# See tests/test_see.py.
+# In `3r3k/8/8/3P4/4K3/8/b7/8 b - -`, Rxd5 is +1: the bishop on a2 covers d5,
+# so Kxd5 is illegal and the pawn is free. A king valued at 0 would recapture
+# there and return -4.
 SEE_VALUES = dict(VALUES)
 SEE_VALUES[chess.KING] = 10_000
 

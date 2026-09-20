@@ -134,6 +134,12 @@ ARCHIVE_2024_URL = _HF + "/year%3D2024/month%3D{m:02d}/train-{i:05d}-of-{n:05d}.
 # on PATH.
 STOCKFISH = os.environ.get("CHESS_STOCKFISH", "stockfish")
 
+# The flanker derivatives (OpenNeuro ds004883). Not redistributed here,
+# for the same reason the chess archives are not: they belong to their
+# publisher. Point CHESS_FLANKER at the folder holding trials_v2.csv,
+# exclusions.csv and raw/. See the README.
+FLANKER = os.environ.get("CHESS_FLANKER", "")
+
 # -- Paths -------------------------------------------------------------
 _ROOT   = Path(__file__).resolve().parent.parent
 WORK    = str(Path(os.environ.get("CHESS_WORK", _ROOT / "out")))
@@ -141,6 +147,20 @@ DERIVED = str(_ROOT / "data" / "derived")
 
 STAGE1     = f"{WORK}/players"        # player-level aggregates, untitled
 STAGE1_FM  = f"{WORK}/titled"         # player-level aggregates, titled
+SHARD_CACHE = f"{WORK}/shards"        # raw shards, only with --keep-shards
+
+def shard_cache_path(m, i):
+    """Where a kept shard lives. One owner for the name, so the scan
+    that writes it and the extract that reads it cannot drift."""
+    import os as _os
+    return _os.path.join(SHARD_CACHE, f"m{int(m):02d}_s{int(i):05d}.parquet")
+
+
+def shard_cache_for(url):
+    """The cached path for an archive URL, or None if it is not one."""
+    import re as _re
+    m = _re.search(r"month(?:%3D|=)(\d{2}).*?train-(\d{5})-of-", url)
+    return shard_cache_path(m.group(1), m.group(2)) if m else None
 STAGE2     = f"{WORK}/plies"          # ply-level intermediate, untitled
 STAGE2_FM  = f"{WORK}/plies_fm"       # ply-level intermediate, titled
 STAGE3     = f"{WORK}/epochs"         # event and control epochs
@@ -177,3 +197,20 @@ def ensure_dirs(*paths):
         d = p if (os.path.splitext(p)[1] == "") else os.path.dirname(p)
         if d:
             os.makedirs(d, exist_ok=True)
+
+
+# ── The roster the manuscript reports ───────────────────────────────────────
+# Stage 2 refuses to run on a sample that does not match these, because it
+# once ran on a titled tier aggregated over one month (26 players) instead of
+# six (136), and produced a different sample from the paper's without saying
+# so. Only the counts are needed for that guard.
+#
+#   tier: (games, players screened, % retained, players sampled)
+SAMPLE_TABLE = {
+    "1300-1600": (201_949, 41_882, 20.7, 500),
+    "1600-1900": (148_391, 40_643, 27.4, 500),
+    "1900-2100": (54_140, 15_106, 27.9, 500),
+    "2100+":     (27_189, 5_764, 21.2, 500),
+    TITLE_TIER:  (712, 136, 19.1, 136),
+}
+SAMPLE_N_PLAYERS = 2_136

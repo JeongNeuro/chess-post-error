@@ -40,12 +40,14 @@ Driver: `run.py prep`.
 #     z_pre3 AFTER standardisation.
 # ───────────────────────────────────────────────────────────
 
+import io
 import numpy as np
 import pandas as pd
 
 from .config import (TAU, EPOCH_WINDOW, LOG_OFFSET, CALIPER_SD, MATCH_VARS,
                      BLUNDER_THRESH, WP_LO, WP_HI, PRESPEED_K)
 from .analysis import (caliper_mask, build_zmap, window_mean, control_pool,
+                       require_isolated,
                        cluster_stats)
 
 KEY = ["game_id", "player", "ply"]
@@ -54,31 +56,110 @@ KEY = ["game_id", "player", "ply"]
 # ════════════════════════════════════════════════════════════════════
 # Derived variables - net_mat and z_pre3
 # The pre-trend test showed that event epochs were already slower than their
-# controls just before the event (+0.021 in the lower four tiers, +0.038 in
-# FM+). Matching on win probability, time, complexity and ply does not
-# control for how fast the player happened to be moving just beforehand.
+# controls just before the event (+0.064 in the lower four tiers, +0.079 in
+# FM+, averaged over lags -1 to -3 with no pre-speed control). Matching on
+# win probability, time, complexity and ply does not control for how fast the
+# player happened to be moving just beforehand.
 # 
 #   z_pre3(t) = mean( z(t-2), z(t-4), z(t-6) )     <- by ply index
 # 
 # It was not preregistered, so it is reported as a robustness check.
 # ════════════════════════════════════════════════════════════════════
 
-def add_pre_speed(d, k=3, col="z_pre3"):
+# ────────────────────────────────────────────────────────────────────
+# Which code built this table
+# ────────────────────────────────────────────────────────────────────
+
+PREP_STAMP_KEY = b"chess_prep_code"
+
+
+def preprocessing_hash():
     """
-    Attach to each ply the mean z of the player's preceding k moves, found
-    by ply index.
+    A hash over the code that decides what the analysis table contains: this
+    module, and the constants the preprocessing reads.
+
+    It changes when the preprocessing changes, which is the point. A table
+    built before the change then stops being readable instead of quietly
+    producing results under a definition nobody is using any more.
+    """
+    import hashlib
+    import os
+    h = hashlib.sha256()
+    h.update(io.open(os.path.join(os.path.dirname(__file__), "prepare.py"),
+                     "rb").read())
+    for name in ("TAU", "LOG_OFFSET", "PRESPEED_K", "OPENING_CUT",
+                 "BLUNDER_THRESH", "WP_LO", "WP_HI"):
+        h.update(f"{name}={globals().get(name)!r};".encode())
+    return h.hexdigest()
+
+
+def write_prepared(d, path):
+    """Write the analysis table with the preprocessing hash attached."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    t = pa.Table.from_pandas(d, preserve_index=False)
+    meta = dict(t.schema.metadata or {})
+    meta[PREP_STAMP_KEY] = preprocessing_hash().encode()
+    pq.write_table(t.replace_schema_metadata(meta), path)
+
+
+def prepared_stamp(path):
+    """The hash stored in a table, or None if it carries none."""
+    import pyarrow.parquet as pq
+    meta = pq.read_schema(path).metadata or {}
+    v = meta.get(PREP_STAMP_KEY)
+    return v.decode() if v else None
+
+
+def read_prepared(path, columns=None, require_stamp=True):
+    """
+    Read an analysis table, refusing one that current code did not build.
+
+    A warning would not do. The stale table was used for a full day of
+    analysis while every stage ran without complaint; only a comparison
+    against freshly built data showed it. So this raises.
+    """
+    import pandas as pd
+    if require_stamp:
+        want = preprocessing_hash()
+        got = prepared_stamp(path)
+        if got is None:
+            raise ValueError(
+                f"{path} carries no preprocessing stamp, so there is no way "
+                f"to tell which code built it. Rebuild it with `run.py prep` "
+                f"(or `prep fm`).")
+        if got != want:
+            raise ValueError(
+                f"{path} was built by different preprocessing code "
+                f"(stored {got[:12]}, current {want[:12]}). Rebuild it with "
+                f"`run.py prep`, or check out the code that made it.")
+    return pd.read_parquet(path, columns=columns)
+
+
+def add_pre_mean(d, src, k=3, col=None):
+    """
+    Attach to each ply the mean of `src` over the player's preceding k moves,
+    found by ply index.
 
     Consecutive moves by the same player are two plies apart, so this looks
     up ply-2, ply-4, ..., ply-2k. If any one is absent the result is NaN.
+
+    `src` is a column of `d`, so the control it defines is in that column's
+    own units. Matching the recent history of one quantity with the recent
+    history of another does not control it: the two correlate but are not the
+    same, and a quantity defined only inside a window (blunder_q, on
+    win probability 10-90%) is missing on different rows than one defined
+    everywhere.
     """
+    col = col or f"{src}_pre{k}"
     d = d.copy()
     dup = d.duplicated(subset=KEY).sum()
     if dup:
         raise ValueError(
             f"(game_id, player, ply) is not unique ({dup} rows). "
-            "Looking z_pre3 up by ply requires uniqueness.")
+            f"Looking {col} up by ply requires uniqueness.")
 
-    s = d.set_index(KEY)["z"]
+    s = d.set_index(KEY)[src]
     acc = np.zeros(len(d), dtype=float)
     for i in range(1, k + 1):
         key = pd.MultiIndex.from_arrays(
@@ -87,6 +168,11 @@ def add_pre_speed(d, k=3, col="z_pre3"):
         acc += s.reindex(key).to_numpy(dtype=float)   # absent -> NaN, propagates
     d[col] = acc / k
     return d
+
+
+def add_pre_speed(d, k=3, col="z_pre3"):
+    """The pre-event speed control: `add_pre_mean` over standardised time."""
+    return add_pre_mean(d, "z", k=k, col=col)
 
 
 def _next_own(d, col):
@@ -110,8 +196,9 @@ def net_legal_change(d, col="net_legal"):
 
     This is the quantity used in the manuscript's "Number of available
     options" section. It moves in opposite directions when the player loses
-    material and when the opponent does (-8.52 on average for a nine-point
-    own loss, +6.86 for a nine-point opponent loss), so holding it fixed and
+    material and when the opponent does (-8.36 on average for a nine-point
+    own loss, +6.31 for a nine-point opponent loss; four untitled tiers, all
+    events - see legal_change.csv), so holding it fixed and
     comparing the effect rules out "the position simply became simpler".
     """
     d = d.copy()
@@ -157,9 +244,97 @@ def prepare(df):
     return d.dropna(subset=["z"])
 
 
+def standardise(d, tau=TAU, k=PRESPEED_K):
+    """
+    Measurement floor, then z within player, then the preceding-speed control.
+
+    The one implementation. cmd_prep and the robustness specifications both
+    call it, because they had a copy each and the copies diverged: the
+    robustness one produced 174,515 more missing z_pre3 than the table it was
+    being compared against, and the opening-cut row and the measurement-floor
+    row -- the same specification under two names -- read -0.6396 and -0.6210.
+
+    The order matters and is fixed here. z_pre3 is taken by ply index, so it
+    has to be computed on the rows that survive the floor; computing it first
+    would let "the preceding three moves" reach past a move the floor
+    removed.
+    """
+    x = d[d.move_time >= tau].copy()
+    x["y"] = np.log(x.move_time + LOG_OFFSET)
+    g = x.groupby("player")["y"]
+    x["z"] = (x.y - g.transform("mean")) / g.transform("std").replace(0, np.nan)
+    x = x.dropna(subset=["z"]).reset_index(drop=True)
+    return add_pre_speed(x, k=k)
+
+
 def calipers(d, sd_mult=CALIPER_SD, vars_=MATCH_VARS):
     """Austin (2011): 0.2 times each variable's SD."""
     return {v: sd_mult * d[v].std() for v in vars_ if v in d.columns}
+
+
+def expected_quality(d, min_cell=30):
+    """
+    Loss on a move, in excess of what its position would ordinarily cost.
+
+    How much win probability a move gives up is driven mechanically by where
+    the position sits: its win probability, how many legal moves there are,
+    and how much clock is left. A position reached by losing material has
+    fewer legal moves and a lower win probability, and both make a given
+    lapse cost less. Matching cannot remove that, because the quantity is
+    measured on the move after the event, by which point the event has
+    already changed it.
+
+    So it is removed from the outcome instead. Every evaluated move is placed
+    in a cell -- win probability in 20 equal bins, legal-move count in
+    deciles, remaining clock in quintiles -- and the cell mean becomes what
+    that position ordinarily costs. The outcomes are the excess over it.
+
+    Cells holding fewer than min_cell moves are left as NaN rather than
+    fitted on a handful of observations.
+    """
+    d = d.copy()
+    ok = d.wp_before.notna() & d.wp_delta.notna()
+    cells = pd.DataFrame({
+        "w": pd.cut(d.wp_before, np.linspace(0, 1, 21), include_lowest=True),
+        "l": pd.qcut(d.n_legal.rank(method="first"), 10, labels=False),
+        "c": pd.qcut(d.clk_before.rank(method="first"), 5, labels=False),
+    }, index=d.index)
+    key = [cells.w, cells.l, cells.c]
+
+    loss = (-d.wp_delta).where(ok)
+    blun = d["blunder_q"]
+    size = loss.groupby(key, observed=True).transform("size")
+    big = size >= min_cell
+
+    d["wp_loss_exp"] = loss.groupby(key, observed=True).transform("mean").where(big)
+    d["blunder_exp"] = blun.groupby(key, observed=True).transform("mean").where(big)
+    d["wp_loss_x"] = (loss - d["wp_loss_exp"]).astype(float)
+    d["blunder_x"] = (blun - d["blunder_exp"]).astype(float)
+    d["_cell_n"] = size
+    return d
+
+
+def next_quality_columns(d, thresh=BLUNDER_THRESH, wp_lo=WP_LO, wp_hi=WP_HI):
+    """
+    Outcome columns for run.py nextq, one value per move.
+
+    These are properties of the move itself, not of the move that follows it:
+    lagwise looks them up at ply + 2k on its own. Only wp_before_next is
+    shifted here, because it is a matching variable rather than an outcome.
+
+    blunder_q is forced to float. A boolean column carrying NaN becomes
+    object dtype, and a mean over that reduces with `or` rather than by
+    addition, returning 1/n for every group instead of the rate.
+    """
+    d = d.copy()
+    inband = d.wp_before.between(wp_lo, wp_hi)
+    ok = d.wp_delta.notna()
+    d["blunder_q"] = np.where(ok & inband,
+                              (d.wp_delta <= -thresh).astype(float),
+                              np.nan).astype(float)
+    d["wp_loss_q"] = (-d.wp_delta).astype(float)
+    d["wp_before_next"] = _next_own(d, "wp_before")
+    return d
 
 
 def events_A(d, thresh=BLUNDER_THRESH, wp_lo=WP_LO, wp_hi=WP_HI):
@@ -193,12 +368,63 @@ def mask_B(d, min_loss=1):
     return d.net_mat.notna() & (d.net_mat <= -min_loss)
 
 
+def mask_any_event(d):
+    """
+    Every move this study treats as an event, for keeping out of the control
+    pool. The Method says controls are windows in which no event occurred.
+
+      - a blunder (identifiable only where an engine evaluation exists)
+      - the player losing material on net
+      - **the opponent** losing material on net
+
+    The third is not analysed under that name, but it is followed by slower
+    moves (+0.219), so a control drawn from one is pulled the opposite way
+    from a material-loss event, biasing the comparison towards zero.
+
+    What cannot be removed: a blunder in a game carrying no engine evaluation
+    is not identifiable, so some remain. Stated in the limitations.
+    """
+    m = pd.Series(False, index=d.index)
+    if "net_mat" in d.columns:
+        m |= d.net_mat.notna() & (d.net_mat != 0)
+    if {"wp_delta", "wp_before"} <= set(d.columns):
+        m |= mask_A(d)
+    return m
+
+
+def mask_after_event(d):
+    """
+    The player's own preceding move (two plies back) was an event.
+
+    28.9% of moves are an event of some kind and 27.5% follow one, so a
+    control drawn without this condition is often the move straight after
+    someone's event, its time already changed by it. 42.9% of events
+    themselves follow another event.
+    """
+    ev = mask_any_event(d)
+    keys = set(zip(d.game_id[ev], d.player[ev], d.ply[ev]))
+    return pd.Series(
+        [(g, p, y - 2) in keys
+         for g, p, y in zip(d.game_id, d.player, d.ply)], index=d.index)
+
+
+def isolated(d, mask):
+    """
+    Events from `mask` that do not themselves follow an event.
+
+    Every stage must pass its event mask through this. lagwise asserts it,
+    so a stage that forgets will stop rather than report the effect of a run
+    of events as the effect of one.
+    """
+    return mask & ~mask_after_event(d)
+
+
 def events_B_see(d, min_value=1):
     """
     Event C as preregistered = the manuscript's Event B (SEE > 0).
     **This definition was withdrawn.**
 
-    It failed to exclude even trades: 55.7% of its events had zero net
+    It failed to exclude even trades: 55.8% of its events had zero net
     change. Use it only to regenerate the appendix comparison.
     See docs/definitions.md.
     """
@@ -232,6 +458,7 @@ def build_and_match(d, events, cal, window=EPOCH_WINDOW, seed=0,
     if max_events and len(events) > max_events:
         events = events.sample(max_events, random_state=seed)
 
+    require_isolated(events, d)
     players = set(events.player.unique())
     d = d[d.player.isin(players)]
     zmap = build_zmap(d)
@@ -271,7 +498,15 @@ def reliability(epochs, min_events=10):
     e = epochs.dropna(subset=["effect"]).copy()
     if len(e) < 50:
         return None
-    e["half"] = pd.factorize(e.game_id)[0] % 2
+    # Alternate the player's OWN games. pd.factorize over the whole frame
+    # numbers games in the order they appear across every player, so other
+    # players' games fall between a player's own and the split within that
+    # player is arbitrary rather than alternating -- it can even land
+    # lopsided. The Method says "split into alternate games", and this is
+    # what that means.
+    order = e.groupby("player").game_id.transform(
+        lambda g: pd.factorize(g)[0])
+    e["half"] = order % 2
     piv = e.groupby(["player", "half"])["effect"].agg(["mean", "size"]).unstack()
     ok = (piv["size"].fillna(0) >= min_events / 2).all(axis=1)
     piv = piv[ok]

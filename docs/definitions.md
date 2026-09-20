@@ -33,7 +33,8 @@ between 10% and 90%.
 
 The bounds exist because a 10-point drop means something different at 0.95 than
 at 0.50. Engine evaluation is present only for games a player has submitted for
-analysis: roughly 15% of games in the lower tiers and 92.5% in the titled tier.
+analysis: 12.4% to 28.4% of games in the lower tiers and 93.9% in the titled
+tier.
 
 Implemented in `src/prepare.py` (`events_A` / `mask_A`) from the `wp_delta`
 and `wp_before` columns.
@@ -41,7 +42,7 @@ and `wp_before` columns.
 There is no Event B. A time-pressure event keyed to a remaining-time floor was
 considered during Phase 1 and dropped; `config.GRID_TIME_FLOOR` is what remains
 of that exploration. See the label table above; the code follows the
-manuscript's A/B naming. See also `docs/corrections.md`.
+manuscript's A/B naming.
 
 ### Event B — Material net loss
 
@@ -74,24 +75,24 @@ SEE available to black in the resulting position is 3. The move is counted as a
 three-point loss.
 
 **How large the problem was.** Of the events identified under the registered
-criterion, in the verification subsample:
+criterion, across both analysis tables:
 
 | Actual net change | Count | Share |
 |---|---:|---:|
-| Loss | 75,219 | 31.5% |
-| Zero (even exchange) | 132,700 | **55.7%** |
-| Gain | 30,257 | **12.7%** |
+| Loss | 510,204 | 31.5% |
+| Zero (even exchange) | 904,693 | **55.8%** |
+| Gain | 206,437 | **12.7%** |
 
-Events classified as nine-point losses had a mean net change of −0.99.
+Events classified as nine-point losses had a mean net change of −1.00.
 
-The counts above sum to 238,176, not to the 1.585 million events the registered
-criterion identifies over the full corpus — they come from the verification
-subsample. The percentages are what the manuscript reports.
+The criterion identifies 1,689,748 events; the 1,621,334 above are those with
+a defined net change. The rest sit at the edge of a game, where the material
+differential on the following move is not observed.
 
 **What changed.** The definition was revised to net material change and all
-analyses were rerun. Event count fell from 1,585,000 to 887,287 (7.52 to 4.21
-per game). The effect at the immediately following move went from −0.167 to
-−0.587.
+analyses were rerun. Event count fell from 1,689,748 to 932,846 (7.61 to 4.20
+per game). At the immediately following move, on the untitled tiers under the
+legal-move-count specification, the effect went from −0.214 to −0.593.
 
 **Where both live in the code.** `src/see.py` implements the registered
 criterion and is retained so the supplementary comparison can be regenerated.
@@ -102,12 +103,6 @@ The net-loss definition is the one used for every number in the manuscript.
 labelled `material_see` so the two never end up in the same column of
 `lag_profiles.csv` again.
 
-Note that until the 2026-09-14 review, the analysis scripts were in fact
-calling the registered (SEE) criterion, not the net-loss one — the shipped
-`lag_profiles.csv` shows a t+1 effect of −0.205 for "material" where the
-manuscript reports −0.587. `docs/corrections.md` has the details. Anything
-regenerated before that date should be treated as SEE-based.
-
 ---
 
 ## Other deviations
@@ -115,9 +110,11 @@ regenerated before that date should be treated as SEE-based.
 ### Pre-event speed was added as a control
 
 Not in the registered specification. Inspection of pre-event trends showed that
-the three moves before a blunder were already slow (+0.021) and the blunder move
-itself was +0.34, so the mean standardised time of the three preceding moves was
-added as a matching variable with a 0.6 SD caliper.
+the three moves before a blunder were already slow -- the mean event-minus-
+control difference over lags -1 to -3, with no pre-speed control, is +0.064 in
+the lower tiers and +0.079 in the titled tier -- and that the blunder move
+itself sat at z = +0.47. The mean standardised time of the three preceding
+moves was therefore added as a matching variable with a 0.6 SD caliper.
 
 Three approaches are reported: no control (`run.py lag <which> nlegal`),
 0.6 SD matching (`run.py lag <which> zpre`, `run.py ps6`), and

@@ -1,0 +1,19 @@
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+
+This licence covers the derived data in data/derived/ — the tables written by
+the analysis code. It does not cover the code, which is under the MIT licence
+in LICENSE at the repository root.
+
+You are free to share and adapt this material for any purpose, including
+commercially, provided you give appropriate credit, link to the licence, and
+indicate if changes were made.
+
+  Jeong, Y., & Kim, Y. (2026). Analysis code for "Perceptibility of Error
+  Outcomes Determines the Direction of Post-Error Adjustment".
+  https://github.com/JeongNeuro/chess-post-error
+
+Full text: https://creativecommons.org/licenses/by/4.0/legalcode
+
+The game records these tables are derived from are the Lichess open database,
+released by Lichess under CC0. The flanker comparison uses OpenNeuro ds004883,
+which carries its own licence; neither dataset is redistributed here.

@@ -40,13 +40,14 @@ Driver: `run.py`. There is no entry point in this file.
 #   - mat_diff is filled only when do_see=True.
 #   - Which point in the move n_legal, ply, wp_before and wp_delta refer to.
 #   - The surest check is to follow one game by hand and count mat_diff.
-#   - This is the slowest stage (about 45 minutes).
+#   - This is the slowest stage (about 85 minutes over 397 shards).
 # ───────────────────────────────────────────────────────────
 
 import hashlib
 import os
 import re
 import subprocess
+import time
 
 import chess
 import duckdb
@@ -174,10 +175,77 @@ def shard_url(year, month, i, n):
     return ARCHIVE_URL.format(y=year, m=month, i=i, n=n)
 
 
-def download(url, dst):
-    r = subprocess.run(["curl", "-sL", "--fail", "-o", dst, url],
-                       capture_output=True)
-    return r.returncode == 0 and os.path.getsize(dst) > 1_000_000
+def parquet_ok(path):
+    """
+    A complete parquet file ends with the four bytes PAR1. A download that was
+    cut off does not, whatever its size.
+
+    Size was the test before, `> 1_000_000`. Seven truncated shards of 5 MB to
+    168 MB passed it, were kept in the cache as if finished, and brought down
+    `extract` hours later with "No magic bytes found at end of file".
+    """
+    try:
+        if os.path.getsize(path) < 12:
+            return False
+        with open(path, "rb") as fh:
+            fh.seek(-4, os.SEEK_END)
+            return fh.read(4) == b"PAR1"
+    except OSError:
+        return False
+
+
+DOWNLOAD_LOG = os.environ.get("CHESS_DOWNLOAD_LOG")   # a path, or unset to stay quiet
+
+
+def _note(msg):
+    if DOWNLOAD_LOG:
+        try:
+            with open(DOWNLOAD_LOG, "a", encoding="utf-8") as fh:
+                fh.write("%s  %s" % (time.strftime("%H:%M:%S"), msg) + chr(10))
+        except OSError:
+            pass
+
+
+def download(url, dst, tries=4):
+    """
+    Download to `dst`, atomically and verified.
+
+    The old version wrote straight to `dst`, checked only the return code and
+    the file size, and said nothing about why it failed. A scan of 397 shards
+    reported `fail=273` with no record of a single reason, and left seven
+    half-written files in the cache that later passed the size test.
+
+    Now: write to `dst.part`, require curl to succeed *and* the footer to be
+    intact, then rename. A partial file is removed, never promoted. Each
+    attempt's curl error is recorded.
+    """
+    part = dst + ".part"
+    for attempt in range(1, tries + 1):
+        # No -C - : curl combines resume badly with --retry and returns 23
+        # ("failed writing body") with nothing written. Each attempt starts
+        # the file again; a shard is ~170 MB and takes about a minute.
+        if os.path.exists(part):
+            os.remove(part)
+        r = subprocess.run(
+            ["curl", "-sS", "-L", "--fail", "--connect-timeout", "30",
+             "--max-time", "1800", "--speed-limit", "10000", "--speed-time", "120",
+             "--retry", "3", "--retry-delay", "5", "--retry-all-errors",
+             "-o", part, url],
+            capture_output=True, text=True)
+        if r.returncode == 0 and parquet_ok(part):
+            os.replace(part, dst)
+            return True
+        why = (r.stderr or "").strip().splitlines()
+        why = why[-1][:120] if why else (
+            "footer missing" if r.returncode == 0 else "curl rc=%d" % r.returncode)
+        size = os.path.getsize(part) if os.path.exists(part) else 0
+        _note("attempt %d/%d  %-11s %12s bytes  %s"
+              % (attempt, tries, os.path.basename(dst), f"{size:,}", why))
+        if os.path.exists(part):
+            os.remove(part)
+        if attempt < tries:
+            time.sleep(min(60, 5 * 2 ** (attempt - 1)))
+    return False
 
 
 SQL_PLAYERS = f"""
@@ -244,23 +312,38 @@ FROM g WHERE elo IS NOT NULL GROUP BY player
 
 
 def scan_titled_shard(args):
-    m, i, n = args
+    """
+    Aggregate one shard's titled accounts.
+
+    With keep=True the downloaded shard is left in SHARD_CACHE instead of
+    being deleted, and extract-titled reads it from there. The two stages
+    otherwise fetch the same 2,355 shards twice over: about seven and a half
+    hours for the titled tier, half of it spent downloading bytes that were
+    already on disk. Keeping them costs roughly 400 GB, which is why it is
+    not the default.
+    """
+    m, i, n = args[0], args[1], args[2]
+    keep = args[3] if len(args) > 3 else False
     p = f"{STAGE1_FM}/m{m:02d}_s{i:05d}.parquet"
     if os.path.exists(p) and os.path.getsize(p) > 0:
         return "skip"
-    tmp = os.path.join(WORK, f"_t{m}_{i}.parquet")
-    url = ARCHIVE_2024_URL.format(m=m, i=i, n=n)
-    r = subprocess.run(["curl", "-sL", "--fail", "-o", tmp, url], capture_output=True)
-    if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 1_000_000:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        return "fail"
+    cached = shard_cache_path(m, i)
+    have_cached = parquet_ok(cached)
+    tmp = cached if keep else os.path.join(WORK, f"_t{m}_{i}.parquet")
+    if keep:
+        os.makedirs(SHARD_CACHE, exist_ok=True)
+    if not have_cached:
+        url = ARCHIVE_2024_URL.format(m=m, i=i, n=n)
+        if not download(url, tmp):
+            return "fail"
+    else:
+        tmp = cached
     try:
         con = duckdb.connect()
         con.execute(f"COPY ({SQL_TITLED.format(f=tmp)}) TO '{p}' (FORMAT PARQUET)")
         con.close()
     finally:
-        if os.path.exists(tmp):
+        if not keep and os.path.exists(tmp):
             os.remove(tmp)
     return "ok"
 
@@ -285,6 +368,8 @@ _SQL_AGG = """
            min(elo_min) AS elo_min, max(elo_max) AS elo_max
     FROM read_parquet('{glob}')
     GROUP BY player
+    ORDER BY player          -- the sample draw depends on row order;
+                             -- DuckDB does not promise one without this
 """
 
 
@@ -319,7 +404,18 @@ def assign_tier_row(row):
 
 
 def build_sample(df, min_games=MIN_GAMES, per_tier=PER_TIER, seed=SEED):
-    df = df.copy()
+    """
+    Draw the stratified sample.
+
+    Sorted by player first. pool.sample(n, random_state=seed) picks by
+    position, so a fixed seed over differently ordered rows returns
+    different accounts. The aggregation feeding this is a DuckDB GROUP BY,
+    which promises no order, and it had none: the published sample was
+    drawn from an order nobody recorded and could not be reproduced even
+    from the same archive. Sorting here rather than only in the SQL means
+    every caller gets the same answer.
+    """
+    df = df.sort_values("player").reset_index(drop=True)
     df["tier"] = df.apply(assign_tier_row, axis=1)
     df = df[df.tier.notna()]
 
@@ -364,22 +460,41 @@ def sample_report(df, elig, samp):
 
 
 def build_all():
+    """
+    Build the sample from whatever stage 1 output exists.
+
+    The titled sample is derived from the titled aggregates alone and does not
+    depend on the untitled ones. This used to call aggregate_players() first
+    and die on a missing players/ directory, taking the titled sample with it,
+    so anyone who had run only scan-titled could not go on to extract-titled.
+    """
     ensure_dirs(SAMPLE, SAMPLE_FM, PLAYERS_ALL)
-    df = aggregate_players()
-    df, elig, samp = build_sample(df)
+    has_untitled = os.path.isdir(STAGE1) and any(
+        f.endswith(".parquet") for f in os.listdir(STAGE1))
+    if has_untitled:
+        df = aggregate_players()
+        df, elig, samp = build_sample(df)
+    else:
+        print(f"note: {STAGE1} holds no aggregates, so only the titled sample "
+              f"is built. Run `run.py scan` for the rest.")
+        df = elig = samp = None
 
     # Titled tier: replace it with the separate aggregate when one exists.
     fm = None
     if os.path.isdir(STAGE1_FM) and any(
             f.endswith(".parquet") for f in os.listdir(STAGE1_FM)):
         fm = build_titled_sample(aggregate_titled())
-        samp = pd.concat([samp[samp.tier != TITLE_TIER], fm], ignore_index=True)
         fm.to_parquet(SAMPLE_FM, index=False)
+        if samp is not None:
+            samp = pd.concat([samp[samp.tier != TITLE_TIER], fm],
+                             ignore_index=True)
         print(f"titled tier: {len(fm):,} players -> {SAMPLE_FM}")
     else:
         print(f"warning: {STAGE1_FM} is empty. Run `run.py scan-titled` "
               f"first or the titled tier will be missing.")
 
+    if samp is None:
+        return
     print(sample_report(df, elig, samp))
     samp.to_parquet(SAMPLE, index=False)
     df.to_parquet(PLAYERS_ALL, index=False)

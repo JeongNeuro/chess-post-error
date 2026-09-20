@@ -9,9 +9,9 @@ abstract: >-
   games - moves an engine scores as large evaluation drops, and moves after
   which material disappears from the board - and the direction of the
   subsequent change in decision time differs between them. The repository
-  holds the full pipeline, the derived statistics behind every reported
-  value, and a mechanical check of the manuscript's numbers against those
-  outputs.
+  holds the full pipeline and the derived statistics behind every reported
+  value. The code is under the MIT licence; the derived tables in
+  data/derived/ are under CC BY 4.0.
 type: software
 authors:
   - family-names: Jeong
@@ -24,8 +24,8 @@ authors:
     affiliation: Korea University
 repository-code: https://github.com/JeongNeuro/chess-post-error
 license: MIT
-version: v1.0
-date-released: '2026-09-16'
+version: v1.1
+date-released: '2026-09-19'
 doi: 10.5281/zenodo.22787114
 keywords:
   - post-error slowing

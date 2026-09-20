@@ -1,7 +1,7 @@
 # Post-error adjustment in online chess
 
 Analysis code for *Perceptibility of Error Outcomes Determines the Direction of
-Post-Error Adjustment: Evidence From 3.9 Million Moves in Online Chess.*
+Post-Error Adjustment: Evidence From 6.7 Million Moves in Online Chess.*
 
 The study asks whether the change in decision time after an error depends on
 whether the consequence of that error is visible. Two kinds of error are
@@ -10,6 +10,7 @@ evaluation drops, and moves after which material actually disappears from the
 board.
 
 - **Preregistration** — https://doi.org/10.17605/OSF.IO/VQ7XC
+- **Archive** — https://doi.org/10.5281/zenodo.22787114
 - **Repository** — https://github.com/JeongNeuro/chess-post-error
 - **Manuscript** — under review at *Journal of Cognitive Psychology*
 
@@ -19,14 +20,10 @@ board.
 
 ```
 run.py       single entry point — every stage is a subcommand
-src/         analysis modules (five files)
-tests/       unit tests (pytest)
+src/         analysis modules (seven files)
 data/
-  derived/   outputs small enough to version (effects, SEs)
-docs/        definitions, corrections, review guide, environment notes,
-             and the extracted manuscript values (five files, all English)
-check_external_docs.py   compares documents outside this repository
-             (cover letter, README) against the manuscript
+  derived/   every value the manuscript reports (effects, SEs, counts)
+docs/        definitions and environment notes
 ```
 
 `python run.py --help` lists the stages; `python run.py <stage> --help` gives
@@ -39,9 +36,13 @@ redistributed by Lichess under CC0; `run.py scan` downloads what it needs.
 
 ## Reproducing the analysis
 
-Total runtime is roughly 1.5 hours for the untitled tiers, dominated by
-stage 2. Including the titled tier adds 8 to 9 hours, almost all of it
-download: `scan-titled` reads every shard of six months to find 136 accounts.
+Total runtime is roughly 1 hour 45 minutes for the untitled tiers,
+dominated by stage 2. Measured over all 397 shards of January 2024: 18
+minutes to scan, 85 to extract, under a minute to prepare. The scan figure
+assumes a fast link; it is almost entirely download.
+
+Including the titled tier adds 8 to 9 hours, again almost all of it download:
+`scan-titled` reads every shard of six months to find 136 accounts.
 That stage skips existing outputs, so it can be split across sessions.
 
 ### 0. Environment
@@ -49,7 +50,6 @@ That stage skips existing outputs, so it can be split across sessions.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-pytest
 ```
 
 Run from the repository root.
@@ -92,8 +92,8 @@ The titled tier is drawn from six months (2024-01 to 2024-06) because one
 month yields only 26 accounts with ≥30 games. Repeat `scan-titled` for each.
 
 This stage exists so that board reconstruction runs only for selected players.
-Processing the full corpus would take about 21 hours; this two-stage approach
-reduces it to roughly 1.4 hours.
+Processing the full corpus would take about 21 hours; this two-stage
+approach reduces it to under two.
 
 ### 2. Reconstruct positions
 
@@ -106,7 +106,7 @@ Replays each game with `python-chess`, computing per-ply move time, win
 probability, legal move count, static exchange evaluation, and the material
 differential. Writes `out/plies/` and `out/plies_fm/`.
 
-**This is the slow step (~45 min).** It is shard-parallel; the arguments are a
+**This is the slow step (~85 min).** It is shard-parallel; the arguments are a
 shard range, so the work can be split across sessions.
 
 ### 3. Build the analysis table
@@ -139,9 +139,7 @@ Standard errors are clustered by player throughout.
 
 ### 5. The remaining reported analyses
 
-These produce the rest of what the manuscript reports. Until they are run,
-`verify-paper` falls back to the transcribed values in `src/external_values.py`
-and says so in its output.
+These produce the rest of what the manuscript reports.
 
 ```bash
 python run.py lag B zpre --by-tier   # Fig 1a — one curve per tier
@@ -162,7 +160,30 @@ python run.py ps6 B                # pre-speed matched, with pre-trend
 python run.py did B                # difference-in-differences comparison
 python run.py mixed B              # preregistered mixed-effects model
 python run.py lag B nlegal --see   # registered (withdrawn) SEE definition
+python run.py nextq --mode split   # quality of the following moves
+python run.py nextq --mode split --qpre    # with the regression control
+python tools/window_definition.py  # what the window definition costs
 ```
+
+### 6b. The flanker comparison
+
+Computed here rather than quoted. The dataset is OpenNeuro ds004883
+(Clayson et al., 2024) and is **not** redistributed with this repository, for
+the same reason the chess archives are not.
+
+```bash
+# 1. fetch the derivatives (about 40 MB of event tables)
+#    https://openneuro.org/datasets/ds004883
+# 2. the folder must hold trials_v2.csv, exclusions.csv and raw/
+export CHESS_FLANKER=/path/to/ds004883-derivatives
+python run.py flanker
+```
+
+Writes `flanker.csv`, `flanker_reliability.csv` and `flanker_by_version.csv`.
+The three task versions are analysed separately and never pooled: the dataset
+exists to show they are not equivalent, and their error rates run from 9% to
+18%. The stage stops if the per-version analysed counts do not sum to the
+273,475 trials the Method states.
 
 ### 7. Complexity validation
 
@@ -176,11 +197,7 @@ python run.py cx-model        # fit cx_pred, add it to prepared*.parquet
 move count vs. measured complexity, and the prediction model). Check them
 against the paper before citing.
 
-### 8. Check the numbers
-
-```bash
-python run.py verify-paper
-```
+### 8. What this produces
 
 **This repository stops at the statistics.** It produces the CSVs in
 `data/derived/`; it does not draw the figures. Every value plotted in the
@@ -215,68 +232,28 @@ why the titled window is six months.
 ## Reviewing the code
 
 Each source file carries a short review note at the top: what it does, what to
-check, and which numbers in the paper depend on it. `docs/reviewing.md` gives a
-suggested order and the specific values to verify against.
-`docs/corrections.md` records the defects found in the pre-release review, which
-reported values they affected, and which results did not reproduce.
+check, and which numbers in the paper depend on it. The files are ordered to
+follow the pipeline, so reading them in the order of the *Module reference*
+table below follows the data.
 
-```bash
-pytest                           # 39 tests, under a second
-python run.py verify-paper       # every number in the manuscript vs data/derived/
-python check_external_docs.py --tex paper.tex    # cover letter, README, …
-```
-
-`verify-paper` transcribes every value reported in the manuscript
-(`src/paper_check.py`, with the section each came from) and compares it against
-the derived data. Failures are tagged `DATA` (regenerate the repository output)
-or `PAPER` (check the manuscript's own arithmetic). All 117 comparisons
-currently agree; the remaining fourteen notices are informational.
-
-Transcription is checked separately. `docs/paper_values.txt` is extracted
-mechanically from the manuscript source — every number, grouped by the section
-it appears in — and the test suite confirms that each transcribed value occurs
-in the section it claims to come from. A value that exists somewhere in the
-paper but was filed under the wrong section is caught; so is a value that
-appears in `paper_check.py` but not in the manuscript at all. Both failure
-modes were introduced deliberately and confirmed to fail before this was
-relied on.
-
-This exists because the transcription was twice filled from the repository's
-own outputs rather than from the manuscript, which makes the comparison
-vacuous. `docs/corrections.md` records both occasions.
-
-`verify-paper` sees only what is inside this repository. A cover letter or a
-preprint title page quotes the same figures and is checked by nothing, so
-`check_external_docs.py` reads the claims out of the manuscript source and
-compares them against those documents. It matches on wording where the wording
-is shared and on the values themselves where it is not: a letter that restates
-a superseded move count in a sentence the manuscript never contains slips past
-the first pass, and only the second catches it. Both passes were confirmed
-against a document carrying the old figure.
-
-This file is one of the documents checked. It is located from the script’s own
-directory rather than the working directory, because the check is normally run
-from the folder holding the manuscript — where a bare `README.md` resolves to
-something else, or to nothing, and is skipped in silence. It was skipped that
-way, and this README carried a superseded move count in its title line and
-citation until that was fixed.
+`docs/definitions.md` defines the events, the matching variables and every
+column name used in `data/derived/`. It is needed to read those files at all.
 
 ## Module reference
 
 | File | Lines | Purpose |
 |---|---:|---|
-| `run.py` | ~1540 | Every stage as a subcommand; the whole pipeline in one place |
-| `src/config.py` | ~180 | All thresholds and paths — opening cut, measurement floor, epoch window, calipers, archive URLs |
-| `src/see.py` | ~185 | Static exchange evaluation (self-contained, separately tested) |
-| `src/extract.py` | ~640 | PGN parsing and win probability → shard scan → stratified sampling → board replay and per-ply features |
-| `src/prepare.py` | ~295 | Net material change, pre-event speed, z standardisation, event definitions, calipers |
-| `src/analysis.py` | ~560 | Caliper matching, player-clustered SEs, lag decomposition, pre-trend, mixed-effects models |
-| `src/complexity.py` | ~175 | Stockfish interface and the complexity prediction model |
-| `src/paper_check.py` | ~845 | Every value reported in the manuscript, transcribed with its source; the comparison against `data/derived/`; and the cross-checks between derived files |
-| `src/external_values.py` | ~140 | Values the manuscript reports that this pipeline does not produce — the flanker comparison (OpenNeuro ds004883), marked `external` |
+| `run.py` | 1,984 | Every stage as a subcommand; the whole pipeline in one place |
+| `src/config.py` | 216 | All thresholds and paths — opening cut, measurement floor, epoch window, calipers, archive URLs |
+| `src/see.py` | 188 | Static exchange evaluation (self-contained) |
+| `src/extract.py` | 762 | PGN parsing and win probability → shard scan → stratified sampling → board replay and per-ply features |
+| `src/prepare.py` | 548 | Net material change, pre-event speed, z standardisation, event definitions, calipers |
+| `src/analysis.py` | 660 | Caliper matching, player-clustered SEs, lag decomposition, pre-trend, mixed-effects models |
+| `src/complexity.py` | 178 | Stockfish interface and the complexity prediction model |
+| `src/flanker.py` | 281 | The flanker comparison (OpenNeuro ds004883), computed here rather than quoted |
 
-Nine files, about 4,600 lines, plus tests. Each file is ordered to follow the
-pipeline and opens with a review note saying what to check in it.
+Eight files, about 4,820 lines. Each is ordered to follow the pipeline and
+opens with a review note saying what to check in it.
 
 ## Derived data
 
@@ -290,15 +267,41 @@ pipeline and opens with a review note saying what to check in it.
 | `reliability_curve.csv` | Reliability against events retained per player | Fig 2d |
 | `reliability.csv` | Split-half reliability and σ_b by event type | Table 2, Fig 2e |
 | `legal_bins_queen.csv` | The same legal-move bins restricted to nine-point losses | Results text |
+| `legal_change.csv` | Mean change in legal move count by size of loss, over all events | Results text |
 | `mixed_B.csv` | Mixed-effects coefficients with and without the win-probability covariate, and the paired-difference estimate on each corresponding subset | Results text |
 | `robustness.csv` | The six registered specifications at alternative levels | Results text |
 | `se_tier.csv` | Effects by tier | Results text |
 | `event_characteristics.csv` | Win-probability drop, material lost, and subsequent-blunder rate for each event group | Results text |
+| `next_quality_split.csv` | Quality of the player's next moves after an event, three-group partition | Results text |
+| `next_quality_split_qpre.csv` | The same, additionally matched on the mean of the outcome over the player's preceding three moves | Results text |
+| `next_quality_dose.csv` | The same, by material value and direction | Results text |
+| `next_quality_tier.csv` | The same, by tier | Results text |
+| `flanker.csv` | The flanker comparison, per task version | Fig 2g |
+| `flanker_reliability.csv` | Split-half reliability against errors retained per participant, flanker | Fig 2g |
+| `see_reimplementation_columns.csv` | How far `see_loss` and `max_see_mine` move between the two implementations | Appendix |
+| `see_reimplementation_transitions.csv` | Which values change into which | Appendix |
+| `see_reimplementation_events.csv` | Event counts under each criterion, before and after | Appendix |
+| `window_definition.csv` | t+1 under the three window definitions, four untitled tiers | Appendix |
+| `flanker_by_version.csv` | Stimuli, exclusions, analysed trials and error rate per flanker version | Appendix |
 | `se_split_4tier.csv` | The three-group partition on the untitled tiers only, for comparison with the five-tier primary analysis | — |
 | `per_player_t1_4tier.csv` | Per-player effects for the same four-tier comparison | — |
 
-Fig 2g (the flanker comparison) is not produced here — see
-`src/external_values.py`.
+Fig 2g (the flanker comparison) is produced by `src/flanker.py` from
+OpenNeuro ds004883, which must be downloaded separately.
+
+The `next_quality_*.csv` files carry two effects per row: `effect` weights
+every event equally, `effect_pw` weights every player equally. They agree in
+sign throughout; where they differ in size `effect_pw` is the larger, so the
+reported `effect` is the conservative one.
+
+They also run from lag -3 to +3. An event is a bad move by definition, so if
+move quality drifts within a player the event is drawn from a temporary trough
+and the next move returns towards that player's usual level with no adjustment
+at all. The pre-event lags show whether there is such a trough. `--qpre` adds
+the second check: it matches on the mean of the outcome over the player's own
+preceding three moves, at the same caliper as pre-event speed, each outcome
+against its own history. `run.py nextq --mode split --qpre` writes the file
+above; `--qpre-sd` sets that caliper in SD.
 
 Standard errors in these files are clustered by player. Effects are in
 within-player standard deviations of log move time. Each `se_*.csv` carries,
@@ -308,6 +311,16 @@ player-weighted effect (`epw`), and the number of clusters (`np`).
 `event_type` in `lag_profiles.csv` distinguishes `material` (net loss, the
 manuscript definition) from `material_see` (the registered criterion, retained
 for the supplementary comparison). They are not interchangeable — see below.
+Under the same specification the registered criterion gives -0.214 at t+1
+against -0.593 for net loss, because more than half of what it counts as an
+event involves no net change in material.
+
+The three `see_reimplementation_*.csv` files compare the static exchange
+evaluation as this code computes it against the values in the table released
+with v1.0. They differ on 0.55% of moves, one-sidedly, and no move changes
+its classification under the manuscript's `net_mat < 0` criterion. The code
+that produced the earlier values is not preserved, so the direction of the
+change is the only evidence about its cause.
 
 The `player` column in `per_player_t1.csv` holds salted hashes (`P` followed
 by twelve hex digits), not account names. `run.py anonymize` produced them; the
@@ -328,14 +341,15 @@ together with the mean standardised time of the three preceding moves
 The preregistration included win probability as a sixth. It is not used in the
 primary analysis. Material-loss events are defined without reference to the
 engine, and requiring an evaluation restricts them to the games a player has
-submitted for analysis — 12.7% to 29.1% of games in the untitled tiers and
+submitted for analysis — 12.4% to 28.4% of games in the untitled tiers and
 93.9% among titled players. Matching on win probability would therefore make
 each tier a differently self-selected subsample, which is the comparison the
 manuscript's tier-level results rest on.
 
-On the subsample where both specifications can be computed, they give −0.560
-and −0.587, a difference smaller than either standard error, while the
-five-variable set retains about half again as many events. `run.py robustness`
+On the subsample where both specifications can be computed, they give −0.639
+and −0.644, a difference far smaller than either standard error, while the
+five-variable set retains about half again as many events (8,807 against
+5,573). `run.py robustness`
 reports both as `caliper_vars`.
 
 Blunder events are unaffected: they require an engine evaluation by
@@ -350,7 +364,7 @@ The variable sets are `MATCH_VARS` and `MATCH_VARS_WP` in `src/config.py`.
 The preregistration specified material loss as a move after which the
 opponent's maximum static exchange evaluation exceeded zero, stating that even
 exchanges would resolve to zero and be excluded. **They do not.** Verification
-showed that 55.7% of the events identified that way involved no net change in
+showed that 55.8% of the events identified that way involved no net change in
 material and 12.7% involved a net gain.
 
 The analysis reported in the manuscript therefore uses **net material change**:
@@ -370,15 +384,19 @@ criterion and is retained for the supplementary comparison, reachable through
 
 ```
 Jeong, Y., & Kim, Y. (2026). Perceptibility of error outcomes determines the
-direction of post-error adjustment: Evidence from 3.9 million moves in online
+direction of post-error adjustment: Evidence from 6.7 million moves in online
 chess. [Preprint]
 ```
 
 Game data are from the Lichess open database (https://database.lichess.org),
-released under CC0. The flanker comparison uses OpenNeuro ds004883; that
-analysis is not part of this repository — its values are held in
-`src/external_values.py` and marked `external`.
+released under CC0. The flanker comparison uses OpenNeuro ds004883 and is
+computed by `src/flanker.py`; that dataset must be downloaded separately.
 
 ## Licence
 
-Code: MIT. Derived data: CC0.
+Code is released under the MIT Licence (`LICENSE`); derived data in
+`data/derived/` are released under CC BY 4.0 (`data/LICENSE`).
+
+The game records behind those tables are the Lichess open database, released
+by Lichess under CC0, and are not redistributed here. The flanker comparison
+uses OpenNeuro ds004883 under its own licence, also not redistributed.
