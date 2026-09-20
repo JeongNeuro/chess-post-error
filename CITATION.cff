@@ -24,8 +24,8 @@ authors:
     affiliation: Korea University
 repository-code: https://github.com/JeongNeuro/chess-post-error
 license: MIT
-version: v1.1
-date-released: '2026-09-19'
+version: v1.2
+date-released: '2026-09-20'
 doi: 10.5281/zenodo.22787114
 keywords:
   - post-error slowing
