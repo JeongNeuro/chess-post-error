@@ -1,5 +1,10 @@
 # Post-error adjustment in online chess
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22787114.svg)](https://doi.org/10.5281/zenodo.22787114)
+[![Code licence: MIT](https://img.shields.io/badge/code-MIT-blue.svg)](LICENSE)
+[![Data licence: CC BY 4.0](https://img.shields.io/badge/data-CC%20BY%204.0-blue.svg)](data/LICENSE)
+[![Preregistration](https://img.shields.io/badge/preregistration-OSF-337ab7.svg)](https://doi.org/10.17605/OSF.IO/VQ7XC)
+
 Analysis code for *Perceptibility of Error Outcomes Shapes the Direction of
 Post-Error Adjustment: Evidence From 6.7 Million Moves in Online Chess.*
 
@@ -13,6 +18,39 @@ board.
 - **Archive** — https://doi.org/10.5281/zenodo.22787114
 - **Repository** — https://github.com/JeongNeuro/chess-post-error
 - **Manuscript** — under review at *Journal of Cognitive Psychology*
+
+## The result
+
+![Change in move time by position relative to the event](docs/figures/fig1.png)
+
+**Figure 1.** Change in move time by position relative to the event (∆, event
+minus matched control, in within-player SD; negative values are faster moves).
+(a) Material net loss and (b) blunder, by rating tier. (c) The three event
+groups. Bands are ±1 SE clustered by player.
+
+The move after an error is slower when the error left no trace on the board
+(+0.154) and faster when material disappeared (-0.493 and -0.631), a difference
+of 0.647 SD at t+1 between the two blunder conditions. The split is not one of
+error magnitude, and not of how far the position simplified: it follows whether
+the outcome was visible.
+
+![Distributions, control analyses, reliability, and the laboratory comparison](docs/figures/fig2.png)
+
+**Figure 2.** (a) Per-player effects at t+1. (b, c) Effects by who lost the
+material, by the value of the material lost (b) and within bins of equal change
+in the legal move count (c). (d) Reliability against events per person. (e)
+Change in decision time after an error, three chess conditions and three flanker
+versions. (f) Error rate on the next trial, flanker.
+
+Panel (d) is why the laboratory comparison is there. Material loss clears the
+.70 conventional criterion, blunders stay at zero however many events are
+retained, and the flanker reaches .70 on fewer trials per person (.706 at 80
+error trials) than material loss needs (.534 at 80, clearing .70 near 200).
+Chess supplies those events; the flanker does not.
+
+Both figures are the manuscript's. Every value plotted in them is a row in
+`data/derived/`, so each panel can be checked against the table it came from;
+the list under [Derived data](#derived-data) says which file backs which panel.
 
 ---
 
@@ -200,10 +238,12 @@ against the paper before citing.
 ### 8. What this produces
 
 **This repository stops at the statistics.** It produces the CSVs in
-`data/derived/`; it does not draw the figures. Every value plotted in the
-manuscript's figures is a row in one of those files, so the figures can be
-redrawn with whatever tool you prefer. The table under *Derived data* below
-says which file backs which panel.
+`data/derived/`; it does not draw the figures. The two shown at the top of this
+page are the manuscript's own, included so the result is visible without opening
+the paper, and no code here reproduces them. Every value plotted in them is a
+row in one of those CSVs, so the figures can be redrawn with whatever tool you
+prefer, and any panel can be checked against the table it came from. The list
+under *Derived data* below says which file backs which panel.
 
 ---
 
@@ -260,24 +300,24 @@ opens with a review note saying what to check in it.
 | File | Contents | Figure / table |
 |---|---|---|
 | `lag_profiles.csv` | Effect, SE, t, and n at each lag, by event type, tier, and control specification | Fig 1a, 1b |
-| `se_split.csv` | Three-group partition with SEs | Fig 1c, Fig 2f |
+| `se_split.csv` | Three-group partition with SEs | Fig 1c, Fig 2a, Fig 2e |
 | `per_player_t1.csv` | Per-player effects at t+1 | Fig 2a |
-| `legal_bins.csv` | Effect within bins of equal change in legal move count | Fig 2b |
-| `se_dose.csv` | Effects by material value and direction | Fig 2c |
+| `legal_bins.csv` | Effect within bins of equal change in legal move count | Fig 2c |
+| `se_dose.csv` | Effects by material value and direction | Fig 2b |
 | `reliability_curve.csv` | Reliability against events retained per player | Fig 2d |
-| `reliability.csv` | Split-half reliability and σ_b by event type | Table 2, Fig 2e |
+| `reliability.csv` | Split-half reliability and σ_b by event type | Table 2 |
 | `legal_bins_queen.csv` | The same legal-move bins restricted to nine-point losses | Results text |
 | `legal_change.csv` | Mean change in legal move count by size of loss, over all events | Results text |
 | `mixed_B.csv` | Mixed-effects coefficients with and without the win-probability covariate, and the paired-difference estimate on each corresponding subset | Results text |
 | `robustness.csv` | The six registered specifications at alternative levels | Results text |
 | `se_tier.csv` | Effects by tier | Results text |
 | `event_characteristics.csv` | Win-probability drop, material lost, and subsequent-blunder rate for each event group | Results text |
-| `next_quality_split.csv` | Quality of the player's next moves after an event, three-group partition | Results text |
-| `next_quality_split_qpre.csv` | The same, additionally matched on the mean of the outcome over the player's preceding three moves | Results text |
+| `next_quality_split.csv` | Quality of the player's next moves after an event, three-group partition | Fig 3a, 3b, 3c |
+| `next_quality_split_qpre.csv` | The same, additionally matched on the mean of the outcome over the player's preceding three moves | Fig 3c |
 | `next_quality_dose.csv` | The same, by material value and direction | Results text |
 | `next_quality_tier.csv` | The same, by tier | Results text |
-| `flanker.csv` | The flanker comparison, per task version | Fig 2g |
-| `flanker_reliability.csv` | Split-half reliability against errors retained per participant, flanker | Fig 2g |
+| `flanker.csv` | The flanker comparison, per task version | Fig 2e, Fig 2f |
+| `flanker_reliability.csv` | Split-half reliability against errors retained per participant, flanker | Fig 2d |
 | `see_reimplementation_columns.csv` | How far `see_loss` and `max_see_mine` move between the two implementations | Appendix |
 | `see_reimplementation_transitions.csv` | Which values change into which | Appendix |
 | `see_reimplementation_events.csv` | Event counts under each criterion, before and after | Appendix |
@@ -286,7 +326,7 @@ opens with a review note saying what to check in it.
 | `se_split_4tier.csv` | The three-group partition on the untitled tiers only, for comparison with the five-tier primary analysis | — |
 | `per_player_t1_4tier.csv` | Per-player effects for the same four-tier comparison | — |
 
-Fig 2g (the flanker comparison) is produced by `src/flanker.py` from
+Fig 2e and 2f (the flanker comparison) are produced by `src/flanker.py` from
 OpenNeuro ds004883, which must be downloaded separately.
 
 The `next_quality_*.csv` files carry two effects per row: `effect` weights
